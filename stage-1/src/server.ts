@@ -65,9 +65,9 @@ export function startServer(databasePath: string, options: StartOptions = {}): P
 
 async function main(): Promise<void> {
   const databasePath = process.env.TABLEKEEPER_DB ?? 'tablekeeper.db';
-  const port = Number(process.env.PORT ?? 3000);
-  const started = await startServer(databasePath, { port });
-  process.stdout.write(`tablekeeper stage-1 listening on http://127.0.0.1:${started.port}\n`);
+  const port = Number(process.env.PORT ?? 8080);
+  const started = await startServer(databasePath, { port, host: '0.0.0.0' });
+  process.stdout.write(`tablekeeper stage-1 listening on http://0.0.0.0:${started.port}\n`);
 
   let closing = false;
   const shutdown = (): void => {

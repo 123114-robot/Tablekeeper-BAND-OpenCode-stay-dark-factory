@@ -18,7 +18,9 @@ Legend: `[x]` verified directly, `[ ]` missing or not verified, `[!]` present wi
 - [x] Stage 4 project tests: 81/81.
 - [x] Stage 4 Playwright: 5/5.
 - [x] Stage 4 Docker image builds and serves `/health` and `/`.
-- [ ] Stage 1–3 each need an official-compatible Dockerfile and RUN.md.
+- [!] Stage 1–3 contain Dockerfile and RUN.md packaging. Stage 2–3 packaging is transitional and must become self-contained during the official-contract repair.
+- [x] Official structural preflight passes with Python UTF-8 mode at official revision `803560d2a678ace1414465c098eb0ab5380ffade`.
+- [ ] Stage 1–3 Docker build and startup smoke tests (BLOCKED: Docker Desktop engine unavailable during P0).
 - [ ] Official isolated harness pass for any claimed stage.
 - [!] Current application API and stage allocation differ from the current official Tablekeeper stage specifications.
 

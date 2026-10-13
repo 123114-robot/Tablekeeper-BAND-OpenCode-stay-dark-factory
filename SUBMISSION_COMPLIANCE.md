@@ -6,6 +6,9 @@ Authoritative references:
 - Current official `tablekeeper/spec/stage-1.md` through `stage-4.md`
 - Lablab event submission requirements
 
+Official specification revision used for the compliance repair:
+`803560d2a678ace1414465c098eb0ab5380ffade`.
+
 ## Requirement mapping
 
 | Requirement | State | Evidence / gap |
@@ -15,9 +18,10 @@ Authoritative references:
 | Generic mandate per actual seat | PASS | `mandates/planner.md`, `implementer.md`, `reviewer.md` |
 | Harness/model named in mandates | PASS | Headers name OpenCode adapter and Kimi K2.5 |
 | Full room export | PASS | Root `room.json` |
-| Reciprocal seat handoffs | PRESENT | Visible in full transcript; official check must be rerun after packaging is fixed |
-| One complete folder per claimed stage | PARTIAL | Source exists for Stages 1–4; Stage 1–3 lack required Dockerfile/RUN.md |
-| Clean isolated official harness | FAIL / NOT RUN TO PASS | Preflight blocks before isolated stage scoring |
+| Reciprocal seat handoffs | PASS | Visible in the full transcript and accepted by the official structural preflight at revision `803560d2a678ace1414465c098eb0ab5380ffade` |
+| One complete folder per claimed stage | PARTIAL | Stage 1–3 now contain Dockerfile/RUN.md, but Stage 2–3 use explicitly transitional pinned predecessor packaging pending the cumulative official-contract repair |
+| Structural official preflight | PASS | `PYTHONUTF8=1 python -m harness check ... --track tablekeeper`; this checks layout/provenance only and does not build or score the services |
+| Clean isolated official harness | NOT RUN | Docker Desktop was unavailable during the P0 repair; no stage score is claimed |
 | Current official API contract | FAIL | Project `/v1/...` contract and stage allocation differ from current official specs |
 | Clean-container service start | PASS FOR STAGE 4 ONLY | Docker build, health, and UI smoke passed |
 | Zero-intervention scored run | NOT ESTABLISHED | Recovery room includes human continuation prompts |
@@ -33,8 +37,8 @@ GitHub visibility controls read access. It does not grant write access. The auth
 1. Treat the current official participant guide and track specs as authoritative.
 2. Decide whether to rebuild the official contract in a new clean BAND run or publish this branch only as an engineering archive.
 3. For a scored rebuild, use one task dispatch per stage and no later steering; retain a fresh full-room export.
-4. Produce independent Dockerfile/RUN.md packaging for every claimed stage.
-5. Run `python -m harness check ... --track tablekeeper` until it passes without redaction or structural errors.
+4. Replace the Stage 2–3 transitional pinned predecessor packaging with self-contained cumulative official-contract services.
+5. Keep `python -m harness check ... --track tablekeeper` passing after every structural change.
 6. Run `python -m harness run --track tablekeeper --repo ... --all --mode isolated` and preserve the exact output.
 7. Record the BAND room and product walkthrough; add slides and final form receipt.
 

@@ -1,0 +1,3 @@
+node_modules
+tablekeeper.db*
+*.log

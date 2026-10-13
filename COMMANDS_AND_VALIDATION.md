@@ -72,3 +72,40 @@ python -m harness check <submission-repo> --track tablekeeper
 ```
 
 Observed: `room.json` and mandate checks were readable, but preflight failed because Stages 1–3 lack required `Dockerfile` and `RUN.md` files. The current official stage specifications also describe a different API/stage contract. No official harness PASS is claimed.
+
+## 2026-10-14 compliance-repair P0
+
+Official source revision:
+`803560d2a678ace1414465c098eb0ab5380ffade`.
+
+```powershell
+$env:PYTHONUTF8='1'
+python -m harness check ..\submission-review --track tablekeeper
+```
+
+Observed: exit `0` with `ok — gates 1, 2 and the mandate part of gate 4 pass`.
+This is a structural/provenance preflight only; it does not build the containers
+or score the Tablekeeper contract.
+
+Docker verification was attempted with:
+
+```powershell
+docker version --format '{{.Server.Version}}'
+```
+
+Result: `BLOCKED`. Docker Desktop's Linux engine pipe was not present, so no
+Stage 1–3 image build, startup smoke, or official isolated run is claimed.
+
+Project regression results during this change:
+
+- Stage 1 full suite first run: `56/57`, one concurrency fixture timing failure
+  (`race-innocent` fired before the go signal). Typecheck: PASS.
+- Stage 1 targeted concurrency rerun: `4/4 PASS`.
+- Stage 2 project suite: `28/28 PASS`; new server entry point syntax check: PASS.
+- Stage 3 project suite: `54/54 PASS`; new server entry point syntax check: PASS.
+- Stage 1–3 local HTTP startup smoke: PASS; each entry point bound to
+  `0.0.0.0` on a distinct port and returned `{"status":"ok"}` from `/health`.
+
+The first Stage 1 result is retained rather than being replaced by the passing
+rerun. The local smoke is not a container test. These remain project tests, not
+official harness results.
