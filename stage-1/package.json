@@ -8,12 +8,8 @@
   },
   "scripts": {
     "start": "node src/server.ts",
-    "test": "node --test --test-concurrency=1",
-    "test:concurrency": "node --test test/concurrency.test.ts",
-    "test:idempotency": "node --test test/idempotency.test.ts",
-    "test:timezone": "node --test test/timezone.test.ts",
-    "test:atomicity": "node --test test/atomicity.test.ts",
-    "test:http": "node --test test/http.test.ts",
+    "test": "node --test",
+    "test:api": "node --test test/api.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

@@ -1,22 +1,21 @@
 # Stage 1–4 Summary
 
-## Stage 1 — booking integrity
+## Stage 1 — official booking core
 
-- SQLite persistence in WAL mode.
-- Atomic multi-table booking and cancellation.
-- Store-level occupancy uniqueness over 15-minute quanta.
-- Idempotency-key replay and conflict handling.
-- Explicit timezone conversion, DST gap/overlap handling, and sub-hour offsets.
+- Self-contained official-contract service: authentication, restaurant and availability reads, reservation create/list/get/cancel/patch, atomic move batches, and the `/_test/*` hooks.
+- In-memory state, zero runtime dependencies (Node 24, ESM, TypeScript run directly); no SQLite and no build step.
+- The overlap invariant is the half-open interval, enforced per table in one synchronous commit; ten racing clients produce exactly one `201`.
+- Idempotency-key replay and conflict handling; explicit IANA-zone conversion with DST gap/overlap handling and sub-hour offsets.
 - HTTP error-envelope behavior and body limits.
-- Project result: 57/57 tests passed.
+- Project result: 42/42 node tests passed. Official harness host mode, shipped partial suite: 120/120 PASS; isolated BLOCKED (Windows harness path-separator defect).
 
-## Stage 2 — availability and operating hours
+## Stage 2 — official combined tables and browser UI
 
-- Restaurant operating-hours model.
-- Tightest-fit table selection.
-- Availability search that does not mutate booking state.
-- Cross-restaurant isolation, overlap exclusion, DST behavior, and search/write parity.
-- Project result: 28/28 tests passed.
+- Self-contained official-contract service extending Stage 1 in place: declared table pairs, `available_options`, and `table_ids`/`table_id` acceptance with atomic combined bookings.
+- Four server-rendered browser screens (`/`, `/signup`, `/login`, `/lookup`) on the same origin, one inline script, no CDN and no build step.
+- Competing-client handling: out-of-order searches, `409` refresh-and-keep-form, and lost-response retry with the same idempotency key and body.
+- In-memory state, zero runtime dependencies; accepts a Stage 1 export on import.
+- Project result: 60/60 node tests passed. Official harness host mode, shipped partial suite: Stage 1 120/120 + Stage 2 25/25 PASS; isolated BLOCKED (Windows harness path-separator defect).
 
 ## Stage 3 — operational hardening
 

@@ -1,281 +1,133 @@
-# Stage 1 task file — booking core and concurrency proof
+# Stage 1 task file — reservations
 
 **Owner:** Implementer seat. **Reviewer:** review seat, on completion.
-**Plan:** `../plan.md`. **Mandate:** `../mandates/implementer.md`.
+**Authoritative contract:** `tablekeeper/spec/stage-1.md` in the harness package. Where this file and
+the spec disagree, the spec wins. **Plan:** `../plan.md`. **Mandate:** `../mandates/implementer.md`.
 
-Read this file to the end before writing code. Every design decision this unit needs is already made
-below. If you find yourself choosing something not settled here, that is the signal to stop and take it
-to the Planner — do not decide it quietly inside the diff.
+This file records the settled implementation decisions for Stage 1. If a decision is not settled here
+or in the spec, stop and take it to the Planner — do not decide it quietly inside the diff.
 
 ---
 
 ## 1. Objective
 
-Deliver a complete, buildable, running HTTP service that can seat a party at a table and **provably
-never double-books a table**, under concurrent writers, duplicate request delivery, and daylight-saving
-transitions.
+Deliver a buildable, running HTTP service that seats a party at a table and **provably never
+double-books a table**, under concurrent writers, duplicate request delivery and daylight-saving
+transitions. Occupancy is the half-open interval `[starts_at, starts_at + reservation_duration)`, so a
+90-minute booking at 19:00 does not overlap one starting at 20:30.
 
-This stage is the risk retirement stage for the whole factory. Stages 2–4 are layered on top of it.
-Feature breadth is deliberately not the goal here; the guarantee is.
+## 2. File scope — ours and only ours
 
-## 2. File scope — yours and only yours
-
-You own every file below and no file outside it.
+All under `stage-1/`:
 
 ```
-stage-1/src/db.ts            connection, pragmas, transaction helper
-stage-1/src/schema.sql       DDL
-stage-1/src/timezone.ts      local wall time -> UTC instant, and back
-stage-1/src/slots.ts         the 15-minute occupancy quantum grid
-stage-1/src/bookings.ts      the booking write path (reserve, cancel, read)
-stage-1/src/errors.ts        the error taxonomy and its HTTP mapping
-stage-1/src/server.ts        entry point: listen, graceful close
-stage-1/src/routes.ts        request parsing, routing, response shaping
-stage-1/test/concurrency.test.ts
-stage-1/test/idempotency.test.ts
-stage-1/test/timezone.test.ts
-stage-1/test/atomicity.test.ts
-stage-1/test/http.test.ts
+src/errors.ts      error taxonomy and its HTTP mapping
+src/timezone.ts    local wall time <-> instant in a named zone, DST resolution
+src/auth.ts        password hashing, tokens, email validation
+src/store.ts       in-memory state, fixture load, export/import
+src/domain.ts      availability, reservations, amendment, atomic moves
+src/routes.ts      request parsing, routing, idempotency, response shaping
+src/server.ts      entry point: listen on $PORT, graceful close
+test/api.test.ts   stage-1 acceptance suite over the real HTTP surface
+Dockerfile         single-container build, no runtime dependencies
+RUN.md             build/run instructions
+README.md          design note
 ```
 
-Already present and **not yours to edit**: `package.json`, `tsconfig.json`, `README.md`, `.gitignore`.
-If one of them is wrong for your implementation, report it; do not patch it.
+Do not touch `stage-2/**`, `stage-3/**`, `stage-4/**`, `mandates/**` or `room.json`.
 
-## 3. Settled decisions — do not re-litigate these
+## 3. Settled decisions
 
-**Runtime.** Node 26, ESM, TypeScript with `erasableSyntaxOnly`. No build step. No runtime
-dependencies. Use `node:sqlite`, `node:http`, `node:test`, `node:assert`. Do not add a package.
+**Runtime.** Node 24, ESM, TypeScript with `erasableSyntaxOnly`. No build step. Zero runtime
+dependencies: `node:http`, `node:test`, `node:assert`, `node:crypto` and the platform `Intl` zone data
+are enough. Node runs the `.ts` sources directly.
 
-**Database.** SQLite via `node:sqlite`, one database file per test, `:memory:` is not acceptable for
-any test that claims concurrency. On every connection: `PRAGMA journal_mode = WAL` and
-`PRAGMA busy_timeout = 5000`.
+**Storage is in memory.** State lives in the process. Every critical section is
+synchronous, and Node runs one JavaScript thread, so no request can observe or mutate the store
+between an availability check and the write it authorizes. This gives the overlap invariant without a
+database file, background process or migration runner, and makes export/import an exact object round
+trip. `state` in an export is this implementation's own opaque format; the spec only requires that the
+same service accepts it back unchanged. (An earlier draft of this stage planned SQLite; that is
+superseded — see the spec §2, which leaves storage unrestricted and does not require state to survive
+a restart.)
 
-**Transactions.** Every write path runs inside `db.exec("BEGIN IMMEDIATE")` … `COMMIT`, with
-`ROLLBACK` in the error path. Use a single try/finally that guarantees the rollback runs.
+**The guarantee.** `createReservation`, `patchReservation` and `applyMoves` fully validate, check
+overlaps against every confirmed reservation on the same `(restaurant_id, table_id)`, and commit as one
+synchronous step. A rejected request changes nothing.
 
-**The guarantee.** Occupancy is enforced by a primary key, never by application-level locking:
+**Time.** Local wall-clock strings are resolved to an instant in the restaurant's zone by scanning
+candidate instants whose `Intl` round trip reproduces the requested wall time. Overlaps compare
+instants, so a DST transition cannot create or hide a double booking. Local times in a spring-forward
+gap are `422 invalid_local_time` and never appear in availability; a fall-back repeated hour resolves
+to its **first** occurrence and appears **once**.
 
-```sql
-CREATE TABLE occupancy (
-  dining_table_id TEXT NOT NULL REFERENCES dining_table(id),
-  quantum_start_utc TEXT NOT NULL,
-  booking_id       TEXT NOT NULL REFERENCES booking(id),
-  PRIMARY KEY (dining_table_id, quantum_start_utc)
-);
-```
+**Idempotency.** Scoped to `(user, path, key)`. Resolution happens after the body parses as a
+JSON object and the caller authenticates, and **before** field validation: a used key with a different
+JSON body is `409 idempotency_key_reuse` even if the new body is otherwise invalid. First use returns
+the endpoint's normal `201`; a replay returns `200` with the original body verbatim. A request that
+failed with 4xx does not consume the key.
 
-A booking occupies **one row per 15-minute quantum** it covers, not one row per booking. A 19:00–20:30
-booking on a 90-minute slot writes quanta at 19:00, 19:15, … 20:15. This is what makes the primary key
-sufficient: two bookings that overlap always share at least one quantum, and two bookings that do not
-overlap share none. **Do not key occupancy on the booking's start time alone** — two bookings at 19:00
-and 19:30 on a 90-minute slot would both succeed and overlap. That mistake is the specific failure this
-stage exists to prevent.
+**Error envelope.** `{"error": {"code": "...", "message": "..."}}`. Codes: `malformed_request` 400,
+`missing_idempotency_key` 400, `unauthenticated` 401, `forbidden` 403, `not_found` 404,
+`table_unavailable` 409, `email_taken` 409, `idempotency_key_reuse` 409, `cutoff_passed` 409,
+`reservation_cancelled` 409, `validation_failed` 422, `not_on_slot_grid` 422, `outside_opening_hours`
+422, `party_exceeds_capacity` 422, `invalid_local_time` 422, `internal` 500.
 
-**Instant format.** One canonical string everywhere: `Date.prototype.toISOString()`, i.e.
-`YYYY-MM-DDTHH:MM:SS.sssZ`. All persisted and compared instants use it, so lexicographic order equals
-chronological order and string equality equals instant equality.
+**Precedence on a booking.** Opening-window check before grid check: `17:00` is `outside_opening_hours`,
+`18:01` is `not_on_slot_grid`. `party_size` below 1 or non-integer is `validation_failed`; a party over
+the table's capacity is `party_exceeds_capacity`. Unknown restaurant/table, or a table of another
+restaurant, is `not_found`.
 
-**Idempotency.** `idempotency_key` has a primary key on the key alone. On conflict, compare a
-`request_fingerprint` — a stable hash of the normalized request body. Same fingerprint → return the
-stored booking with `200`. Different fingerprint on the same key → `409 KEY_REUSED`. This is what makes a
-retried request safe rather than a second booking.
+## 4. HTTP surface
 
-**Atomicity.** A booking that spans more than one table writes every table's quanta in **one**
-transaction. Any conflict rolls the whole booking back: no occupancy rows, no `booking` row, no
-idempotency key.
+Unchanged from the spec: `/health`, `/_test/reset`, `/_test/export`, `/_test/import`,
+`/auth/signup`, `/auth/login`, the public `GET /restaurants`, `GET /restaurants/{id}`,
+`GET /availability`, and the authenticated `POST /reservations`, `GET /reservations`,
+`GET /reservations/{reference}`, `POST /reservations/{reference}/cancel`,
+`PATCH /reservations/{reference}`, `POST /reservation-moves`. See `spec/stage-1.md` §3–§11 for the
+exact request and response shapes.
 
-**Time zones.** A caller sends `local_start` as `"YYYY-MM-DDTHH:MM"` with **no offset**, plus the
-restaurant's IANA zone. Resolve it by scanning candidate instants at **15-minute granularity** around
-the naive UTC guess and keeping those whose `Intl.DateTimeFormat` round trip reproduces the requested
-wall time.
+## 5. Tests
 
-- 0 candidates → the local time does not exist (spring-forward gap) → `400 INVALID_TIME`.
-- 1 candidate → unambiguous, use it.
-- 2 candidates → ambiguous (fall-back overlap) → `400 AMBIGUOUS_LOCAL_TIME` unless the request
-  supplies `fold: 0` (earlier instant) or `fold: 1` (later instant); a `fold` that matches neither
-  candidate → `400 INVALID_TIME`.
+`test/api.test.ts` drives the real service on an ephemeral port and covers: health and reset
+(including rejected fixtures); auth success and every failure code; public reads; the availability
+grid, capacity filtering, closed days and occupancy; the create validation matrix; idempotency
+(missing key, replay, reuse, another user's key, replay after cancel); list ordering and ownership;
+cancel and cutoff; patch; atomic move batches (success and all-or-nothing rollback); export/import;
+DST spring-forward, fall-back, first-occurrence resolution and absolute duration; and ten clients
+racing one table and slot producing exactly one `201`.
 
-The 15-minute granularity is not a stylistic choice. Whole-hour scanning silently returns *nothing* for
-zones with sub-hour offsets such as `Asia/Kathmandu` (+05:45) and `Pacific/Chatham` (+12:45/+13:45),
-so a whole-hour scan produces a plausible-looking bug that only appears in part of the world. Your
-`test/timezone.test.ts` must cover at least one sub-hour-offset zone in both hemispheres.
-
-**Process time zone independence.** Nothing in the service may read `process.env.TZ`, the system zone,
-or the host's locale for booking logic. Every conversion takes an explicit zone. The full suite must
-pass unchanged under `TZ=Pacific/Kiritimati` (UTC+14).
-
-## 4. Data model
-
-```sql
-CREATE TABLE restaurant (
-  id        TEXT PRIMARY KEY,
-  name      TEXT NOT NULL,
-  timezone  TEXT NOT NULL           -- IANA zone id; reject anything Intl cannot resolve
-);
-
-CREATE TABLE dining_table (
-  id            TEXT PRIMARY KEY,
-  restaurant_id TEXT NOT NULL REFERENCES restaurant(id),
-  seats         INTEGER NOT NULL    -- CHECK (seats > 0)
-);
-
-CREATE TABLE booking (
-  id             TEXT PRIMARY KEY,
-  restaurant_id  TEXT NOT NULL REFERENCES restaurant(id),
-  party_size     INTEGER NOT NULL,
-  start_utc      TEXT NOT NULL,
-  duration_min   INTEGER NOT NULL,  -- multiple of 15
-  status         TEXT NOT NULL      -- 'confirmed' | 'cancelled'
-  created_at_utc TEXT NOT NULL
-);
-
-CREATE TABLE idempotency_key (
-  key                TEXT PRIMARY KEY,
-  request_fingerprint TEXT NOT NULL,
-  booking_id         TEXT NOT NULL REFERENCES booking(id)
-);
-
-CREATE INDEX booking_slot_idx ON booking (restaurant_id, start_utc);
-```
-
-Constraints: `duration_min` and every `local_start` must land on the 15-minute grid; `duration_min` must
-be a positive multiple of 15; `party_size` must be a positive integer; `seats` must satisfy
-`party_size <= seats` or the booking is `409 TABLE_TOO_SMALL`.
-
-Migration discipline: DDL lives in `schema.sql` and is applied through one `migrate()` function that
-records applied migrations in a `schema_migration` table and is safe to run twice. Do not execute DDL
-ad hoc from request handlers.
-
-## 5. HTTP surface
-
-JSON in, JSON out. Errors always take the shape
-`{"error": {"code": "<CODE>", "message": "<human readable>", "details": {…}}}`.
-
-| Method | Path | Success | Failures |
-| --- | --- | --- | --- |
-| `GET` | `/health` | `200 {"status":"ok"}` | — |
-| `POST` | `/v1/restaurants` | `201 {"id"}` | `400 INVALID_TIMEZONE` |
-| `POST` | `/v1/restaurants/:id/tables` | `201 {"id"}` | `404 NOT_FOUND` |
-| `POST` | `/v1/bookings` | `201 {booking}` | see below |
-| `GET` | `/v1/bookings/:id` | `200 {booking}` | `404 NOT_FOUND` |
-| `DELETE` | `/v1/bookings/:id` | `204` | `404 NOT_FOUND` |
-
-`POST /v1/bookings` request body:
-
-```json
-{
-  "restaurant_id": "…",
-  "table_ids": ["…"],
-  "party_size": 4,
-  "local_start": "2026-06-15T19:00",
-  "duration_min": 90,
-  "idempotency_key": "…",
-  "fold": 0
-}
-```
-
-Failure codes for that route, all of them deliberate:
-
-| Code | Status | Meaning |
-| --- | --- | --- |
-| `INVALID_TIME` | 400 | local time does not exist, or `fold` matches no candidate |
-| `AMBIGUOUS_LOCAL_TIME` | 400 | fall-back overlap with no `fold` supplied |
-| `INVALID_TIMEZONE` | 400 | restaurant zone not resolvable by `Intl` |
-| `INVALID_PARTY_SIZE` | 400 | not a positive integer |
-| `INVALID_DURATION` | 400 | not a positive multiple of 15, or off the grid |
-| `INVALID_TABLE` | 400 | table unknown, or not in that restaurant |
-| `SLOT_TAKEN` | 409 | at least one requested table is occupied for an overlapping quantum |
-| `TABLE_TOO_SMALL` | 409 | `party_size` exceeds `seats` |
-| `KEY_REUSED` | 409 | idempotency key reused with a different request |
-| `NOT_FOUND` | 404 | restaurant, table, or booking does not exist |
-| `BUSY_RETRY_EXHAUSTED` | 503 | `SQLITE_BUSY` survived the retry budget |
-
-`BUSY_RETRY_EXHAUSTED` exists so that a writer losing a contention race reports a retryable condition
-instead of an invented success. Map a primary-key violation on `occupancy` to `409 SLOT_TAKEN`; do not
-conflate it with other constraint failures.
-
-Cancellation deletes the booking's occupancy rows and marks the booking `cancelled` in one transaction.
-A cancelled booking frees its tables for reuse. Deleting an unknown or already-cancelled booking is
-`404 NOT_FOUND`, and deleting twice is therefore not a silent success.
-
-## 6. Tests you must write, and what each one must prove
-
-Every test must fail against a plausible broken implementation. A test that cannot fail is a comment.
-
-**`test/concurrency.test.ts`** — the centre of this stage.
-- Spawn **at least 12 child processes** (`node:child_process` spawn of a separate `node` process, not
-  threads) against **one database file** and one table and one slot, each performing the same booking.
-- Assert exactly **one** process receives `201`, the rest receive `409 SLOT_TAKEN`.
-- Assert the `occupancy` table holds exactly the expected number of rows — no duplicates, no orphans —
-  and that exactly one `booking` row exists.
-- Repeat the race at least three times and at a **non-zero offset from a round clock** (e.g. `:07`,
-  `:22`, `:37`) so that a whole-hour-granularity bug cannot pass by luck.
-- Add a second race where two processes book **two different tables for the same party at the same
-  time** and assert both succeed — proving the guarantee rejects a true conflict and does not reject an
-  innocent one.
-
-**`test/idempotency.test.ts`** — deliver the identical request **10 times concurrently** with the same
-idempotency key. Assert one `booking` row, one occupancy row set, and that every response is either the
-original `201` or a `200` replay of the same booking id. Separately, reuse a key with a different body
-and assert `409 KEY_REUSED`.
-
-**`test/timezone.test.ts`** — the cases below, each asserting a specific response code and, where
-applicable, the exact UTC instant:
-
-| Zone | Local start | Expect |
-| --- | --- | --- |
-| `America/New_York` | `2026-03-08T02:30` | `400 INVALID_TIME` (gap) |
-| `America/New_York` | `2026-11-01T01:30` | `400 AMBIGUOUS_LOCAL_TIME` |
-| `America/New_York` | `2026-11-01T01:30` + `fold: 0` | `05:30Z` |
-| `America/New_York` | `2026-11-01T01:30` + `fold: 1` | `06:30Z` |
-| `Asia/Kathmandu` (+05:45) | `2026-06-15T19:00` | `13:15Z` |
-| `Australia/Eucla` (+08:45) | `2026-06-15T19:00` | `10:15Z` |
-| `Pacific/Chatham` (+12:45) | `2026-06-01T02:30` | ambiguous or gap, per zone rules — must not silently resolve |
-| `Asia/Tokyo` (+09:00) | `2026-06-15T19:00` | `10:00Z` |
-
-**`test/atomicity.test.ts`** — book two tables where one is already occupied. Assert `409`, and assert
-the store afterwards contains **no** occupancy rows, **no** booking row, and **no** idempotency key for
-that request. Then cancel a confirmed booking and assert its exact quanta become bookable again.
-
-**`test/http.test.ts`** — full request/response coverage of the table in §5 including every failure
-code, plus cancellation, plus the error envelope shape, plus that `/health` answers before any other
-route. Start the server on an ephemeral port and close it in `after()`; a test that leaks a listener is a
-failure.
-
-## 7. Acceptance criteria — the gate
-
-All five must pass. Run them from `stage-1/`. Report the real output, not a paraphrase.
+## 6. Acceptance gates
 
 ```sh
-cd stage-1
-node --test                                # every suite above, 0 failures
-node --test test/concurrency.test.ts       # the 12-process race: exactly 1 × 201, 11 × 409
-node --test test/idempotency.test.ts       # 10 concurrent duplicates: 1 booking
-node --test test/timezone.test.ts          # gap, ambiguous, fold, and sub-hour offsets
-node --test test/atomicity.test.ts         # multi-table rollback leaves no trace
-TZ=Pacific/Kiritimati node --test          # identical result under UTC+14
-node --test test/http.test.ts              # every route and every failure code
+# G1 — project suite, 0 failures
+cd stage-1 && node --test
+# G2 — harness structure/mandate check
+python -m harness check "<repo>" --track tablekeeper
+# G3 — official stage-1 suite against the built image
+python -m harness run --track tablekeeper --repo "<repo>" --stage 1 --mode isolated
+# G4 — build and serve /health
+docker build -t tablekeeper-stage-1 stage-1
+docker run --rm -p 8080:8080 -e PORT=8080 tablekeeper-stage-1
 ```
 
-Advisory, not part of the gate, because it needs a network install:
+## 7. Definition of done
 
-```sh
-npm install && npx tsc --noEmit
-```
+- [ ] G1 passes, `tsc --noEmit` clean.
+- [ ] Official stage-1 suite passes.
+- [ ] `/health` returns `200 {"status":"ok"}` from the built image.
+- [ ] No runtime dependency added; no file outside `stage-1/` changed.
+- [ ] Zero secrets, tokens or personal data in the diff.
 
-## 8. Definition of done
+## 8. Follow-ups (non-blocking)
 
-- [ ] Every command in §7 run, in order, from `stage-1/`, with real output attached.
-- [ ] Every file in §2 created; no file outside §2 created or modified.
-- [ ] No runtime dependency added to `package.json`.
-- [ ] Every failure code in §5 reachable by at least one test.
-- [ ] Concurrency proof runs against a real file-backed database in separate OS processes, not threads.
-- [ ] The full suite passes with `TZ` set to a hostile ambient zone.
-- [ ] Zero secrets, tokens, or personal data anywhere in the diff.
-
-## 9. What is deliberately not in this stage
-
-No availability search, no table assignment, no authentication, no rate limiting, no migrations CLI, no
-deployment packaging, no UI. Those are stages 2–4 and their task files will carry their own
-decisions. If you find yourself needing one of them to finish this stage, that is a scope error: report
-it rather than building it.
+1. **No-op amendment re-validates the stored start.** A no-op `PATCH`/move re-validates the
+   reservation's existing `starts_at`, so a no-op move on an out-of-contract `/_test/reset` seed
+   (off-grid or out-of-hours `starts_at_local`) returns `422` instead of retaining the record
+   (spec §11 says a no-op move retains existing values). Reachable only with seed data outside the
+   contract; the official `test_seeded_state.py` is 13/13. Candidate fix: short-circuit when a move
+   supplies no fields, or validate the seed grid at reset.
+2. **Idempotency key omits `method`.** The record key is `(user, path, key)` (`src/store.ts:97`)
+   without `method`. No observable difference today — only `POST` carries keys, on two distinct
+   paths — and it matches the user-scoped intent of spec §7. Revisit if a same-path, multi-method
+   keyed endpoint is added.

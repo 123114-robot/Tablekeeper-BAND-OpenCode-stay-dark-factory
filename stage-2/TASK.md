@@ -1,286 +1,122 @@
-# Stage 2 — Task file: domain depth and availability search
+# Stage 2 task file — online booking and combined tables
 
-**Status: OPEN.** Owner ruling 2026-10-02 closed stage 1 as certified and opened this stage.
+**Owner:** Implementer seat. **Reviewer:** review seat, on completion.
+**Authoritative contract:** `tablekeeper/spec/stage-2.md` in the harness package, on top of
+`tablekeeper/spec/stage-1.md`. Where this file and a spec disagree, the spec wins.
+**Frozen:** `stage-1/**`, `stage-3/**`, `stage-4/**`, `mandates/**`, `room.json`. Everything
+this stage creates lives under `stage-2/**`.
 
-Every digest, run, and verdict in this stage binds to one tree root:
-
-```
-/Users/natchaphat5106gmail.com/Desktop/dark-factory-tablekeeper-frozen-20261002-112146
-```
-
-`stage-2/` is a tracked subdirectory of that root. The root is the git toplevel; `stage-2/` is not.
-Any handoff must carry the output of `git rev-parse --show-toplevel`, produced in the same command
-block as the digest, and the Planner verifies it before the handoff is sent.
+This file records the settled implementation decisions for Stage 2. If a decision is not
+settled here or in the spec, stop and take it to the Planner — do not decide it quietly
+inside the diff.
 
 ---
 
-## 1. What this stage is for
+## 1. Objective
 
-Stage 1 proved the write side cannot double-book: one `201` against eleven `409`s across 12 processes,
-with the occupancy primary key as the sole enforcement point and no availability check anywhere in the
-write path. That guarantee is settled and this stage does not touch it.
+Deliver a buildable, running service that satisfies the full official Stage 1 contract and
+the official Stage 2 additions:
 
-Stage 2 builds the **read side**. A diner asks "when can I book a table for four on Friday?" and the
-service answers with slot starts. The risk this stage introduces is new and specific: **the search can
-offer a slot the write side would refuse.** That is not a performance problem or a cosmetic mismatch —
-it is the guarantee leaking out through a door stage 1 did not have. It is the most fragile assumption
-in the stage and it is ordered first for that reason.
+- combinations of two declared tables, occupied atomically for the booking's full duration;
+- `available_options` on each availability slot;
+- the four browser screens, with the competing-client and uncertain-outcome rules;
+- continued acceptance of a Stage 1 export, so a session and its references survive import.
 
-The second risk is that availability search becomes a second enforcement point. It must not. The search
-reads `occupancy`; it never writes it, and it never decides a booking is allowed. If search and write
-disagree about what is bookable, the **write side is right by construction** and search is the bug.
+## 2. File scope
 
----
+All under `stage-2/`:
 
-## 2. Files this stage creates
-
-All under `stage-2/`. Nothing else is in scope.
-
-| Path | Contents |
-| --- | --- |
-| `stage-2/package.json` | `"type": "module"`, `"test": "node --test --test-concurrency=1"`, no runtime dependency |
-| `stage-2/src/availability.ts` | Slot search and table assignment |
-| `stage-2/src/hours.ts` | Hours of operation per restaurant, and slot-to-service-window checks |
-| `stage-2/src/availability.test.ts` | Unit and property-level tests for both |
-| `stage-2/src/hours.test.ts` | Hours parsing, DST interaction, boundary cases |
-| `stage-2/src/parity.test.ts` | The search/write parity proof — see §4, and it is the point of the stage |
-
-`stage-1/` is **closed and immutable**. Do not edit, chmod, unlock, or write anything under it. Do not
-create probe files there. If you need to read stage-1 code, read it.
-
----
-
-## 3. Data model additions
-
-Applied by a `migrate2()` in `stage-2/src/hours.ts` — or extend stage 1's migration ledger rather than
-creating a second one. **Decide this once and state your choice in the handoff.** The rule that matters:
-one ledger, not two. A second ledger means two answers to "has this run?", and the whole point of the
-stage-1 ledger was that it exists so the question can be asked before there is anywhere to record it.
-
-```sql
-CREATE TABLE IF NOT EXISTS restaurant_hours (
-  restaurant_id TEXT NOT NULL REFERENCES restaurant(id),
-  weekday       INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6),
-  opens_min     INTEGER NOT NULL CHECK (opens_min >= 0 AND opens_min < 1440),
-  closes_min    INTEGER NOT NULL CHECK (closes_min > 0 AND closes_min <= 1440),
-  PRIMARY KEY (restaurant_id, weekday)
-);
+```
+src/errors.ts      error taxonomy and its HTTP mapping (adds combination_not_allowed)
+src/timezone.ts    local wall time <-> instant in a named zone, DST resolution
+src/auth.ts        password hashing, tokens, email validation
+src/store.ts       in-memory state, fixture load, export/import (combinable, table_ids)
+src/domain.ts      availability with options, reservations, amendment, atomic moves
+src/routes.ts      request parsing, routing, idempotency, response shaping, screen routes
+src/server.ts      entry point: listen on $PORT, graceful close
+src/ui.ts          server-rendered screens and the one inline client script
+test/api.test.ts   the carried-forward stage-1 acceptance suite
+test/stage2.test.ts  the stage-2 combination and screen-route suite
+Dockerfile         single-container build, no runtime dependencies
+tsconfig.json      advisory typecheck configuration
+RUN.md, README.md, TASK.md  build/run instructions, design note, this file
 ```
 
-`weekday` and `opens_min`/`closes_min` are **local wall-clock minutes in the restaurant's own zone**, not
-UTC. Storing them in UTC would make the table unreadable and the DST behaviour wrong. One row per
-weekday, so a closed day is simply absent.
+## 3. Settled decisions
 
----
+**Self-contained.** The image copies `package.json` and `src` only and imports nothing
+from `stage-1/`. The spec governs each stage folder on its own.
 
-## 4. Unit 1 — Parity: the search must not offer a slot the write side refuses
+**Storage, runtime and time.** In memory, Node 24 ESM TypeScript with `erasableSyntaxOnly`
+and zero runtime dependencies; local times resolve to instants in the restaurant's zone by
+scanning candidates, exactly as in Stage 1.
 
-**Owner: unassigned. Depends on: nothing. Do this first.**
+**Combinations.** `Restaurant.combinable` is a list of unordered pairs of existing table
+ids; pairs only, distinct members, no duplicate pair. A combination's capacity is the sum
+of its members'. `Reservation.table_ids` is the ordered set; a legacy seeded or imported
+`table_id` is read as a set of one. Responses always carry `table_ids`, and carry `table_id`
+only when the set has exactly one member. A requested pair is stored in `combinable` order.
 
-The exported function:
+**Availability.** `available_table_ids` stays singles-only in fixture order. `available_options`
+lists every single and every declared pair with `capacity >= party_size` and no overlapping
+confirmed reservation on any member: singles first, then pairs in `combinable` order.
 
-```ts
-export function isSlotBookable(
-  db: Db,
-  restaurantId: string,
-  tableIds: string[],
-  startUtc: string,
-  durationMin: number,
-): boolean
-```
+**Booking rules.** Both `table_id` and `table_ids` sent is `422 validation_failed`; a
+duplicate id is `422 validation_failed`; more than two tables or an undeclared pair is
+`422 combination_not_allowed`; an overlapping member is `409 table_unavailable`; a party
+above the summed capacity is `422 party_exceeds_capacity`. Cancelling frees every member.
 
-`true` means: every one of `tableIds` is at this restaurant, is large enough, and holds no `occupancy`
-row for any quantum the booking would cover, and the slot falls inside service hours.
+**UI.** Server-rendered HTML for `/`, `/signup`, `/login`, `/lookup`; one inline script,
+no CDN, no framework, no build step. Searches are tagged with a monotonic id so a late
+response never overwrites a newer grid. A `409 table_unavailable` shows `booking-error`,
+refreshes availability and keeps the form and its inputs. A lost response shows nonempty
+`booking-uncertain` and retries with the same idempotency key and body. The token is kept
+in `localStorage`; all required `data-testid` attributes are exposed.
 
-The proof, in `stage-2/src/parity.test.ts`. **One test, and it must fail if the search is wrong:**
+## 4. HTTP surface
 
-1. Build a database with two restaurants, tables of differing seat counts, and a known set of bookings.
-2. For **every** combination of table set, party size, duration, and start quantum in the grid, ask
-   `isSlotBookable`. Then attempt the real booking through stage 1's `reserve()` with the same inputs.
-3. Assert the two agree on exactly one axis: **if `isSlotBookable` returns `true`, `reserve()` must
-   succeed. If it returns `false`, `reserve()` must fail with `SLOT_TAKEN`, `INVALID_TABLE`, or
-   `TABLE_TOO_SMALL` — never succeed.**
-4. The one-directional form is the whole test. A booking succeeding when search says `false` is a stale
-   read, which is legitimate — the slot may have been taken a millisecond ago — and the write side
-   handles it correctly. A booking succeeding when search says `true` is a defect.
+Unchanged from Stage 1 except the additions in the spec: `/availability` slots gain
+`available_options`; `POST /reservations` accepts `table_ids`; `PATCH` and
+`POST /reservation-moves` accept `table_ids` per reservation; and the four screen routes
+return HTML (§3.4's JSON convention governs the API, not those routes).
 
-Enumerate the grid in code, not by hand-written cases. A hand-written case list tests the cases you
-thought of; an enumerated grid tests the space, and the bug in stage 1's first review was a case nobody
-thought of.
+## 5. Tests
 
-**Acceptance:**
+`test/api.test.ts` is the Stage 1 suite, carried forward unchanged, so a regression in the
+older surface is caught. `test/stage2.test.ts` covers the combination model and validation,
+`available_options` ordering, the create/patch/move `table_ids` paths, and that the four
+screen routes answer with HTML.
+
+## 6. Acceptance gates
 
 ```sh
-cd /Users/natchaphat5106gmail.com/Desktop/dark-factory-tablekeeper-frozen-20261002-112146/stage-2
-npm test -- src/parity.test.ts
+# G1 — project suite, 0 failures
+cd stage-2 && node --test
+# G2 — harness structure/mandate check
+python -m harness check "<repo>" --track tablekeeper
+# G3 — official stage-1 and stage-2 suites against the built image (host mode)
+python -m harness run --track tablekeeper --repo "<repo>" --stage 2 --mode host
+# G4 — build and serve /health and /
+docker build -t tablekeeper-stage-2 stage-2
+docker run --rm -p 8080:8080 -e PORT=8080 tablekeeper-stage-2
+# G5 — isolated mode; blocked on this host by a known harness Windows-path defect
+python -m harness run --track tablekeeper --repo "<repo>" --stage 2 --mode isolated
 ```
 
-Passes, and the enumerating loop reports its case count. Then prove the test has teeth by breaking the
-search deliberately — invert the `isSlotBookable` return, or drop one `occupancy` predicate — and
-confirm `parity.test.ts` fails. **A parity test that passes against a deliberately wrong search is worse
-than no test**, because it will be read as proof. Report both runs' real output.
+## 7. Definition of done
 
----
+- [ ] G1 passes, `tsc --noEmit` clean.
+- [ ] Official Stage 1 and Stage 2 suites pass against the built image (host mode).
+- [ ] `/health` returns `200 {"status":"ok"}` and `/` returns HTML from the built image.
+- [ ] No runtime dependency added; no file outside `stage-2/` changed.
+- [ ] Zero secrets, tokens or personal data in the diff.
 
-## 5. Unit 2 — Hours of operation
+## 8. Known limitations
 
-**Owner: unassigned. Depends on: nothing — may run in parallel with Unit 1.**
-
-```ts
-export function assertWithinHours(db: Db, restaurantId: string, startUtc: string, durationMin: number): void
-export function getHours(db: Db, restaurantId: string, weekday: number): { opens: number; closes: number } | null
-```
-
-- `assertWithinHours` throws `ApiError('INVALID_TIME', ...)` when the booking starts before opening,
-  ends after closing, or the restaurant is closed that weekday.
-- **Compute the weekday and the wall-clock minutes in the restaurant's zone, not the caller's.** A
-  booking at `2026-10-02T23:00Z` is `2026-10-03T08:00` in Asia/Tokyo and `2026-10-02T19:00` in
-  America/New_York, and the two have different answers about both weekday and hours. Reusing
-  stage 1's zone resolver is required; do not add a second implementation.
-- **`closes_min` past midnight is out of scope.** A restaurant open until 01:00 is one row with
-  `closes_min = 1440` plus a next-day row; modelling the crossover belongs to stage 3. Do not
-  half-build it. State this limit in a comment so the next seat does not inherit an ambiguous contract.
-- Absent `restaurant_hours` for a weekday means **closed**, not open. It is the fail-closed reading, and
-  the alternative silently offers every slot at every restaurant with no hours configured.
-
-**Acceptance:**
-
-```sh
-cd /Users/natchaphat5106gmail.com/Desktop/dark-factory-tablekeeper-frozen-20261002-112146/stage-2
-npm test -- src/hours.test.ts
-```
-
-Must cover, each as its own named case: a slot inside hours; a slot starting one minute before opening;
-a slot ending one minute after closing; a closed weekday; **the same UTC instant yielding different
-answers in two zones at least 12 hours apart**; and a DST transition day where the wall clock repeats.
-
----
-
-## 6. Unit 3 — Table assignment
-
-**Owner: unassigned. Depends on: Units 1 and 2.**
-
-```ts
-export function findTableCombination(
-  db: Db, restaurantId: string, partySize: number, startUtc: string, durationMin: number,
-): { tableIds: string[]; seats: number } | null
-```
-
-- Return `null` when nothing can seat the party. Do not throw `TABLE_TOO_SMALL` from search — search
-  reports absence, the write path reports refusal, and conflating them is how a search starts refusing
-  writes.
-- **A multi-table party is in scope and must be solved correctly.** Party of 6 with only 4-seat tables
-  returns two of them. A greedy first-fit is wrong here and will be caught: greedy picks two 4s when a
-  6 and a 4 exist that fit one party in two tables with a different leftover shape. Search combinations
-  in decreasing seat-sum order so the tightest workable set is returned first.
-- **Only tables from the requested restaurant.** `restaurantId` is a required positional argument with
-  **no default**, and it appears in the query. This is stage 1's original bug in the form stage 2 first
-  gets the chance to reintroduce it, because stage 2 is where a reusable "find bookable tables" query is
-  finally written. A helper that takes `restaurantId` as an optional trailing argument with an unscoped
-  fallback reproduces the exact defect that cost stage 1 a review round. Every call site passes it.
-
-**Acceptance:**
-
-```sh
-cd /Users/natchaphat5106gmail.com/Desktop/dark-factory-tablekeeper-frozen-20261002-112146/stage-2
-npm test -- src/availability.test.ts
-```
-
-Must cover: single table fits; greedy-would-be-wrong combination returns the tighter set; cross-restaurant
-tables are never returned even when they would fit; party larger than any combination returns `null`; and
-a table held for a **partial** overlap (booking 19:00–19:45 queried at 19:30) is excluded for the whole
-overlapping quantum range, not just the first quantum.
-
----
-
-## 7. Unit 4 — Slot search endpoint
-
-**Owner: unassigned. Depends on: Units 1, 2, 3.**
-
-`GET /v1/restaurants/:id/availability?local_date=YYYY-MM-DD&party_size=N&duration_min=M`
-
-- Returns `{ slots: [{ start_utc, start_local, table_ids }] }`, ordered by `start_utc`.
-- **Read-only. This endpoint writes nothing** — no `occupancy`, no `idempotency_key`, no hold. A search
-  that reserves is a search that can double-book, and the hold/deposit concept belongs to a stage that
-  has decided on it.
-- `local_date` is interpreted in the restaurant's zone.
-- Uses stage 1's `createRequestListener` error path, so an unknown restaurant is `404 NOT_FOUND` and a
-  bad query is `400 INVALID_PARTY_SIZE` / `INVALID_DURATION` — the codes already in `ERROR_STATUS`. **Do
-  not add error codes for this stage.** The taxonomy is enumerable from one map on purpose, and every
-  code added here is one stage 3 has to keep reachable by a test.
-- Existing routes and their status codes are unchanged. This is additive.
-
-**Acceptance:**
-
-```sh
-cd /Users/natchaphat5106gmail.com/Desktop/dark-factory-tablekeeper-frozen-20261002-112146/stage-2
-npm test
-TZ=Pacific/Kiritimati npm test
-```
-
-Both green. The second is not ceremonial: stage 1 established that bare `node --test` fails roughly one
-run in five on this machine because parallel suites starve the event loop, which is why
-`--test-concurrency=1` is in the test script. **Every command in this file goes through `npm test`,
-including the per-file ones — `npm test -- <file>` passes the file to the same serialised runner.** Never
-bare `node --test`, never with parallelised files. The serialised full-suite run and `npm test` are the
-same command, so they are not listed twice.
-
----
-
-## 8. Stage-2 acceptance gate
-
-Six commands from `stage-2/`, all must pass, in this order:
-
-```sh
-cd /Users/natchaphat5106gmail.com/Desktop/dark-factory-tablekeeper-frozen-20261002-112146/stage-2
-npm test                                  # every suite, serialised, 0 failures
-npm test -- src/parity.test.ts            # search never offers a slot the write side refuses
-npm test -- src/hours.test.ts             # zone-correct weekday and service window
-npm test -- src/availability.test.ts      # multi-table assignment, cross-restaurant exclusion
-TZ=Pacific/Kiritimati npm test            # identical result at UTC+14
-TZ=America/New_York npm test              # identical result on the other side of the date line
-```
-
-Plus, all simultaneously true:
-
-- [ ] Every file in §2 created. Nothing outside `stage-2/` created or modified.
-- [ ] No runtime dependency added. `node:sqlite`, `node:http`, `node:test` only.
-- [ ] `occupancy` has exactly one writer, and it is stage 1's booking path. Grep the diff: no
-      `INSERT INTO occupancy`, `UPDATE occupancy`, or `DELETE FROM occupancy` appears in stage-2 source.
-- [ ] The parity test fails when the search is deliberately broken (§4).
-- [ ] The production retry budget is exercised. Stage 1's suite asserts its race distribution under
-      `busyAttempts: 300` while production runs at `DEFAULT_BUSY_ATTEMPTS = 3`, which is why stage 2's
-      concurrency assertions must use the **default**, with any raised budget appearing only as a
-      separately named case. A suite that overrides a retry count proves behaviour under the override,
-      not that the system behaves.
-- [ ] `restaurantId` is a required positional argument with no default on every table-resolution
-      function, and no call site omits it.
-- [ ] `npx tsc --noEmit` is clean (advisory; needs a network install).
-- [ ] Reviewer reproduces all six commands independently from a fresh disk read.
-
----
-
-## 9. Known limitation this stage inherits, and it is not mine to fix
-
-The derivation comments at `stage-1/test/concurrency.test.ts:29-38` and
-`stage-1/test/idempotency.test.ts:72-79` cite tails of 186 ms over 240 samples and 254 ms over 480. Those
-are not reproducible on this hardware — current-harness sampling peaks far below both — and the sample
-counts do not match the committed loops (`DUPLICATE_ROUNDS = 8`). The 1000 ms floor is conservative and
-correct; **the justification is not citable.** Stage 1 is closed and those files are immutable, so the
-comment cannot be fixed in place. If stage 2 re-derives the floor from its own harness, record the new
-measurement here and in the plan, and note that it supersedes the stage-1 comment rather than inheriting
-it. Do not cite 186 ms or 254 ms in anything stage 2 writes.
-
----
-
-## 10. What this stage forecloses
-
-Stated now so a later request does not read as a bug:
-
-- **No holds, deposits, or waitlists.** A slot offered by search can be taken by someone else before you
-  book it; that is a correct answer, not a defect. Holds would add a second owner of booking state, which
-  is the single change most likely to break the guarantee.
-- **No past-midnight closing.** §5 states the limit.
-- **No authentication.** Anyone may read availability. Stage 3.
-- **No search-side caching or precomputation.** A cache is a second copy of occupancy and goes stale in
-  exactly the direction that produces false `true`s. If search gets slow, fix the query; do not cache.
+1. **Isolated mode cannot run on this Windows host.** `harness/cli.py` passes a
+   backslash-separated path (`tablekeeper\test\stage_1`) into the Linux test container, so
+   pytest reports `file or directory not found` and both stages report `error`. This is a
+   harness defect, not a submission defect; the harness is read-only and was not modified.
+   Host mode is the substitute, and the grading run is on Linux.
+2. **No holds, deposits or waitlists.** A slot offered by search can be taken before it is
+   booked; that is a correct refusal, not a defect.

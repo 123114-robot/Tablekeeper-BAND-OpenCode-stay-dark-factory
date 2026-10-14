@@ -72,3 +72,168 @@ python -m harness check <submission-repo> --track tablekeeper
 ```
 
 Observed: `room.json` and mandate checks were readable, but preflight failed because Stages 1–3 lack required `Dockerfile` and `RUN.md` files. The current official stage specifications also describe a different API/stage contract. No official harness PASS is claimed.
+
+## 2026-10-14 compliance-repair P0
+
+Official source revision:
+`803560d2a678ace1414465c098eb0ab5380ffade`.
+
+```powershell
+$env:PYTHONUTF8='1'
+python -m harness check ..\submission-review --track tablekeeper
+```
+
+Observed: exit `0` with `ok — gates 1, 2 and the mandate part of gate 4 pass`.
+This is a structural/provenance preflight only; it does not build the containers
+or score the Tablekeeper contract.
+
+Docker verification was attempted with:
+
+```powershell
+docker version --format '{{.Server.Version}}'
+```
+
+Result: `BLOCKED`. Docker Desktop's Linux engine pipe was not present, so no
+Stage 1–3 image build, startup smoke, or official isolated run is claimed.
+
+Project regression results during this change:
+
+- Stage 1 full suite first run: `56/57`, one concurrency fixture timing failure
+  (`race-innocent` fired before the go signal). Typecheck: PASS.
+- Stage 1 targeted concurrency rerun: `4/4 PASS`.
+- Stage 2 project suite: `28/28 PASS`; new server entry point syntax check: PASS.
+- Stage 3 project suite: `54/54 PASS`; new server entry point syntax check: PASS.
+- Stage 1–3 local HTTP startup smoke: PASS; each entry point bound to
+  `0.0.0.0` on a distinct port and returned `{"status":"ok"}` from `/health`.
+
+The first Stage 1 result is retained rather than being replaced by the passing
+rerun. The local smoke is not a container test. These remain project tests, not
+official harness results.
+
+## 2026-10-14 Stage 1 official-contract repair
+
+Branch `fix/official-tablekeeper-compliance`, parent HEAD
+`c71f4b131ddc62a50997b8e4d0a5a07e4e114913`. All changes confined to `stage-1/**`.
+Canonical harness/spec root this round: `official-harness-review` at
+`803560d2a678ace1414465c098eb0ab5380ffade` (working tree clean; left untouched).
+
+G1 — project suite (workdir `stage-1`):
+
+```powershell
+node --test
+npm run typecheck
+```
+
+Observed: `node --test` -> 42 passed, 0 failed; `npm run typecheck` -> exit 0, clean.
+
+G2 — structural preflight (workdir `official-harness-review`):
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness check "C:\Users\deba3\band-work\submission-review" --track tablekeeper
+```
+
+Observed: exit `0`, `ok — gates 1, 2 and the mandate part of gate 4 pass`.
+
+G3 — official harness run, host mode (outbound NOT blocked), shipped partial
+suite — 120 passed. This is NOT an isolated PASS and NOT a full grading result;
+the shipped suite is a portion of the judge's full set.
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness run --track tablekeeper --repo "C:\Users\deba3\band-work\submission-review" --stage 1 --mode host --out "runs/stage1-host-03"
+```
+
+Observed: `stage 1: pass`; `stage 2: error`; `highest contiguous stage: 1`;
+`claimed stage: 1 on the shipped checks`; exit `0`. Log
+`runs/stage1-host-03/stage-1.log` -> `120 passed in 253.21s`; counts
+`{"collected":120,"passed":120,"failed":0,"errors":0}`
+(stage_1/{health_reset_auth 12, reservations 37, restaurants_availability 18,
+retries_time_input 20, sample 20, seeded_state 13}). The `stage 2` line is the
+overshoot probe: it errored in the `browser` fixture because Playwright Chromium
+is not installed on this host, so it held no stage-2 answer (`overshoot null`).
+
+G4 — Docker build and `/health` (workdir repo root):
+
+```powershell
+docker build -t tablekeeper-stage-1 "C:\Users\deba3\band-work\submission-review\stage-1"
+docker run -d --rm -e PORT=8080 -p 18080:8080 --name tk-g4 tablekeeper-stage-1
+Invoke-WebRequest http://127.0.0.1:18080/health
+docker rm -f tk-g4
+```
+
+Observed: build exit 0; `GET /health` -> HTTP 200 `{"status":"ok"}` in ~1s.
+
+G3 isolated — BLOCKED / UNVERIFIED on this Windows host (harness left pristine):
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness run --track tablekeeper --repo "C:\Users\deba3\band-work\submission-review" --stage 1 --mode isolated --out "runs/stage1-iso-01"
+```
+
+Observed: `stage 1: error`, exit `4`; log `runs/stage1-iso-01/stage-1.log` ends
+`ERROR: file or directory not found: tablekeeper\test\stage_1`. Cause: harness
+`harness/cli.py:89` `str(path.relative_to(ROOT))` emits `tablekeeper\test\stage_1`
+with backslashes on Windows and passes it to the Linux runner container. This is
+a Windows-only harness path-separator defect; it would not occur on Linux/CI. No
+harness file was modified.
+
+## 2026-10-14 Stage 2 official-contract repair
+
+Branch `fix/official-tablekeeper-compliance`, base HEAD
+`320a7f1067901b96bc6da05630f3460de7839b70`. All changes confined to `stage-2/**`.
+Harness/spec root: `official-harness-review` at
+`803560d2a678ace1414465c098eb0ab5380ffade` (left untouched).
+
+G1 — project suite (workdir `stage-2`):
+
+```powershell
+node --test
+npm run typecheck
+```
+
+Observed: `node --test` -> 60 passed, 0 failed; `npm run typecheck` -> exit 0,
+clean (advisory, toolchain resolved from `stage-1/node_modules`).
+
+G2 — structural preflight (workdir `official-harness-review`):
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness check "C:\Users\deba3\band-work\submission-review" --track tablekeeper
+```
+
+Observed: exit `0`, `ok — gates 1, 2 and the mandate part of gate 4 pass`.
+
+G3 — official harness run, host mode (outbound NOT blocked), shipped partial
+suite — Stage 1 120/120 and Stage 2 25/25 (sample 8, UI 17). This is NOT an
+isolated PASS and NOT a full grading result.
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness run --track tablekeeper --repo "C:\Users\deba3\band-work\submission-review" --stage 2 --mode host --out "runs/stage2-host-01"
+```
+
+Observed: `stage 1: pass`; `stage 2: pass`; `stage 3: fail` (overshoot probe);
+`highest contiguous stage: 2`; `claimed stage: 2 on the shipped checks`; exit
+`0`; `share 1.0`; `suite_digest 678442e0…`. The `stage 3` line is the overshoot
+probe: a real Stage 3 contract gap (`POST /restaurants/.../policies -> 404`),
+so `overshoot` is `null`.
+
+G4 — Docker build and `/health` + `/` (workdir repo root):
+
+```powershell
+docker build -t tablekeeper-stage-2 "C:\Users\deba3\band-work\submission-review\stage-2"
+docker run -d --rm -e PORT=8080 -p 18081:8080 --name tk-g4-s2 tablekeeper-stage-2
+Invoke-WebRequest http://127.0.0.1:18081/health
+Invoke-WebRequest http://127.0.0.1:18081/
+docker rm -f tk-g4-s2
+```
+
+Observed: build exit 0; `GET /health` -> HTTP 200 `{"status":"ok"}`;
+`GET /` -> HTTP 200 `text/html` containing `data-testid="search-button"`.
+
+G5 isolated — BLOCKED / UNVERIFIED on this Windows host (harness left pristine):
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness run --track tablekeeper --repo "C:\Users\deba3\band-work\submission-review" --stage 2 --mode isolated --out "runs/stage2-isolated-01"
+```
+
+Observed: `stage 1: error`, `stage 2: error`, exit `4`; logs end
+`ERROR: file or directory not found: tablekeeper\test\stage_1`. Same Windows-only
+`harness/cli.py:89` path-separator defect as the Stage 1 run above; no harness
+file was modified.

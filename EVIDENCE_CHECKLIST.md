@@ -12,15 +12,17 @@ Legend: `[x]` verified directly, `[ ]` missing or not verified, `[!]` present wi
 
 ## Application evidence
 
-- [x] Stage 1 project tests: 57/57.
-- [x] Stage 2 project tests: 28/28.
+- [x] Stage 1 project tests (official-contract suite): 42/42 (2026-10-14).
+- [x] Stage 2 project tests (official-contract suite): 60/60 (2026-10-14).
 - [x] Stage 3 project tests: 54/54.
 - [x] Stage 4 project tests: 81/81.
 - [x] Stage 4 Playwright: 5/5.
 - [x] Stage 4 Docker image builds and serves `/health` and `/`.
-- [ ] Stage 1–3 each need an official-compatible Dockerfile and RUN.md.
-- [ ] Official isolated harness pass for any claimed stage.
-- [!] Current application API and stage allocation differ from the current official Tablekeeper stage specifications.
+- [!] Stage 1–3 contain Dockerfile and RUN.md packaging. Stage 3 packaging is transitional and must become self-contained during the official-contract repair.
+- [x] Official structural preflight passes with Python UTF-8 mode at official revision `803560d2a678ace1414465c098eb0ab5380ffade`.
+- [!] Stage 1 Docker build and startup smoke: PASS (2026-10-14, `/health` -> `{"status":"ok"}`). Stage 2 Docker build and startup smoke: PASS (2026-10-14, `/health` -> `{"status":"ok"}`, `/` served HTTP 200). Stage 3 Docker build/startup smoke: NOT RUN on this host.
+- [!] Official isolated harness: NOT RUN / BLOCKED (Windows harness path-separator defect `harness/cli.py:89`, exit 4). Official harness host mode, shipped partial suite (a portion of the judge's set): Stage 1 120/120 and Stage 2 25/25 PASS (2026-10-14).
+- [!] Stages 1 and 2 APIs now conform to the official spec; Stage 3–4 API and stage allocation still differ from the current official Tablekeeper specifications.
 
 ## Repository integrity
 
@@ -38,3 +40,8 @@ Legend: `[x]` verified directly, `[ ]` missing or not verified, `[!]` present wi
 - [ ] Video showing the BAND room and product walkthrough.
 - [ ] Slide presentation.
 - [ ] Official submission form receipt.
+
+## Known limitations (Stage 1) — follow-ups, not blockers
+
+- [x] Reviewer observation 1: a no-op `PATCH`/move re-validates the reservation's stored start, so a no-op move on an off-grid/out-of-hours *seeded* reservation returns 422 instead of retaining the record. Reachable only with seed data outside the contract (the official `test_seeded_state.py` is 13/13). Follow-up: short-circuit an empty move or validate the seed grid at reset.
+- [x] Reviewer observation 2: the idempotency record key is `(user, path, key)` without `method`. No observable difference today (only `POST` carries keys, on two distinct paths) and it matches the user-scoped intent of spec §7. Follow-up: include `method` if a same-path, multi-method keyed endpoint is added.
