@@ -19,11 +19,11 @@ Official specification revision used for the compliance repair:
 | Harness/model named in mandates | PASS | Headers name OpenCode adapter and Kimi K2.5 |
 | Full room export | PASS | Root `room.json` |
 | Reciprocal seat handoffs | PASS | Visible in the full transcript and accepted by the official structural preflight at revision `803560d2a678ace1414465c098eb0ab5380ffade` |
-| One complete folder per claimed stage | PARTIAL | Stage 1 is now a self-contained official-contract folder; Stage 2–3 still use explicitly transitional pinned predecessor packaging pending the cumulative official-contract repair |
+| One complete folder per claimed stage | PARTIAL | Stages 1 and 2 are now self-contained official-contract folders; Stage 3 still uses explicitly transitional pinned predecessor packaging pending the cumulative official-contract repair |
 | Structural official preflight | PASS | `PYTHONUTF8=1 python -m harness check ... --track tablekeeper`; this checks layout/provenance only and does not build or score the services |
-| Clean isolated official harness | BLOCKED | Isolated mode cannot run on this Windows host: `harness/cli.py:89` passes a backslashed target (`tablekeeper\test\stage_1`) into the Linux runner (exit 4). Official harness host mode on 2026-10-14, shipped partial suite (a portion of the judge's set): Stage 1 120/120 PASS. No full isolated score is claimed |
-| Current official API contract | PARTIAL | Stage 1 now implements the official contract; Stage 2–4 still expose the project `/v1/...` contract and differ from the current official specs |
-| Clean-container service start | PASS FOR STAGES 1 AND 4 | Stage 1 (2026-10-14): Docker build exit 0, `/health` -> `{"status":"ok"}`; Stage 4: Docker build, health, and UI smoke passed |
+| Clean isolated official harness | BLOCKED | Isolated mode cannot run on this Windows host: `harness/cli.py:89` passes a backslashed target (`tablekeeper\test\stage_1`) into the Linux runner (exit 4). Official harness host mode on 2026-10-14, shipped partial suite (a portion of the judge's set): Stage 1 120/120 and Stage 2 25/25 PASS. No full isolated score is claimed |
+| Current official API contract | PARTIAL | Stages 1 and 2 now implement the official contract; Stages 3–4 still expose the project `/v1/...` contract and differ from the current official specs |
+| Clean-container service start | PASS FOR STAGES 1, 2 AND 4 | Stage 1 (2026-10-14): Docker build exit 0, `/health` -> `{"status":"ok"}`; Stage 2 (2026-10-14): Docker build exit 0, `/health` and `/` served; Stage 4: Docker build, health, and UI smoke passed |
 | Zero-intervention scored run | NOT ESTABLISHED | Recovery room includes human continuation prompts |
 | Video with BAND room and walkthrough | MISSING | Must be recorded and linked |
 | Slides | MISSING | Must be created and linked |
@@ -37,7 +37,7 @@ GitHub visibility controls read access. It does not grant write access. The auth
 1. Treat the current official participant guide and track specs as authoritative.
 2. Decide whether to rebuild the official contract in a new clean BAND run or publish this branch only as an engineering archive.
 3. For a scored rebuild, use one task dispatch per stage and no later steering; retain a fresh full-room export.
-4. Replace the Stage 2–3 transitional pinned predecessor packaging with self-contained cumulative official-contract services.
+4. Replace the Stage 3 transitional pinned predecessor packaging with a self-contained cumulative official-contract service.
 5. Keep `python -m harness check ... --track tablekeeper` passing after every structural change.
 6. Run `python -m harness run --track tablekeeper --repo ... --all --mode isolated` and preserve the exact output.
 7. Record the BAND room and product walkthrough; add slides and final form receipt.

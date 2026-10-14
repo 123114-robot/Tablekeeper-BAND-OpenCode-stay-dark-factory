@@ -1,35 +1,54 @@
+/**
+ * Entry point: listen, serve, and close cleanly.
+ *
+ * `startServer` is what the tests use (ephemeral port, no process side effects);
+ * `main` is the thin wrapper that reads `PORT` and installs signal handlers.
+ */
+
 import { createServer, type Server } from 'node:http';
-import { openDatabase, type Db } from '../../stage-1/src/db.ts';
-import { migrate2 } from './hours.ts';
-import { createStage2RequestListener } from './availability.ts';
+import { createRequestListener } from './routes.ts';
+import { newStore, type Store } from './store.ts';
 
-type StartedServer = { server: Server; db: Db; port: number; close: () => Promise<void> };
+export type StartedServer = {
+  server: Server;
+  store: Store;
+  port: number;
+  close: () => Promise<void>;
+};
 
-export function startServer(databasePath: string, port = 0, host = '127.0.0.1'): Promise<StartedServer> {
-  const db = openDatabase(databasePath);
-  migrate2(db);
-  return new Promise((resolve, reject) => {
-    const server = createServer(createStage2RequestListener(db));
-    server.on('error', (error) => {
-      db.close();
-      reject(error);
-    });
+export type StartOptions = {
+  /** Defaults to 0, so a test never fights the machine for a port. */
+  port?: number;
+  host?: string;
+};
+
+export function startServer(options: StartOptions = {}): Promise<StartedServer> {
+  const port = options.port ?? 0;
+  const host = options.host ?? '127.0.0.1';
+  const store = newStore();
+
+  return new Promise<StartedServer>((resolve, reject) => {
+    const server = createServer(createRequestListener(store));
+    server.on('error', (err) => reject(err));
     server.listen(port, host, () => {
       const address = server.address();
       if (address === null || typeof address === 'string') {
         server.close();
-        db.close();
         reject(new Error('server did not bind to a TCP port'));
         return;
       }
       resolve({
         server,
-        db,
+        store,
         port: address.port,
-        close: () => new Promise((done, fail) => server.close((error) => {
-          db.close();
-          if (error) fail(error); else done();
-        })),
+        close: () =>
+          new Promise<void>((done, fail) => {
+            server.close((err) => {
+              if (err) fail(err);
+              else done();
+            });
+            server.closeAllConnections();
+          }),
       });
     });
   });
@@ -37,10 +56,18 @@ export function startServer(databasePath: string, port = 0, host = '127.0.0.1'):
 
 async function main(): Promise<void> {
   const port = Number(process.env.PORT ?? 8080);
-  const databasePath = process.env.TABLEKEEPER_DB ?? 'tablekeeper.db';
-  const started = await startServer(databasePath, port, '0.0.0.0');
+  const started = await startServer({ port, host: '0.0.0.0' });
   process.stdout.write(`tablekeeper stage-2 listening on http://0.0.0.0:${started.port}\n`);
-  const shutdown = (): void => { void started.close().finally(() => process.exit(0)); };
+
+  let closing = false;
+  const shutdown = (): void => {
+    if (closing) return;
+    closing = true;
+    void started.close().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
+  };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }

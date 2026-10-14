@@ -13,16 +13,16 @@ Legend: `[x]` verified directly, `[ ]` missing or not verified, `[!]` present wi
 ## Application evidence
 
 - [x] Stage 1 project tests (official-contract suite): 42/42 (2026-10-14).
-- [x] Stage 2 project tests: 28/28.
+- [x] Stage 2 project tests (official-contract suite): 60/60 (2026-10-14).
 - [x] Stage 3 project tests: 54/54.
 - [x] Stage 4 project tests: 81/81.
 - [x] Stage 4 Playwright: 5/5.
 - [x] Stage 4 Docker image builds and serves `/health` and `/`.
-- [!] Stage 1–3 contain Dockerfile and RUN.md packaging. Stage 2–3 packaging is transitional and must become self-contained during the official-contract repair.
+- [!] Stage 1–3 contain Dockerfile and RUN.md packaging. Stage 3 packaging is transitional and must become self-contained during the official-contract repair.
 - [x] Official structural preflight passes with Python UTF-8 mode at official revision `803560d2a678ace1414465c098eb0ab5380ffade`.
-- [!] Stage 1 Docker build and startup smoke: PASS (2026-10-14, `/health` -> `{"status":"ok"}`). Stage 2–3 Docker build/startup smoke: NOT RUN on this host.
-- [!] Official isolated harness: NOT RUN / BLOCKED (Windows harness path-separator defect `harness/cli.py:89`, exit 4). Official harness host mode, shipped partial suite (a portion of the judge's set): Stage 1 120/120 PASS (2026-10-14).
-- [!] Stage 1 API now conforms to the official spec; Stage 2–4 API and stage allocation still differ from the current official Tablekeeper specifications.
+- [!] Stage 1 Docker build and startup smoke: PASS (2026-10-14, `/health` -> `{"status":"ok"}`). Stage 2 Docker build and startup smoke: PASS (2026-10-14, `/health` -> `{"status":"ok"}`, `/` served HTTP 200). Stage 3 Docker build/startup smoke: NOT RUN on this host.
+- [!] Official isolated harness: NOT RUN / BLOCKED (Windows harness path-separator defect `harness/cli.py:89`, exit 4). Official harness host mode, shipped partial suite (a portion of the judge's set): Stage 1 120/120 and Stage 2 25/25 PASS (2026-10-14).
+- [!] Stages 1 and 2 APIs now conform to the official spec; Stage 3–4 API and stage allocation still differ from the current official Tablekeeper specifications.
 
 ## Repository integrity
 

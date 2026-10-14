@@ -4,7 +4,7 @@ This branch preserves the Tablekeeper implementation produced through a three-se
 
 ## Read this first
 
-The repository is public and auditable. This branch does **not** claim a full official Dark Factory Tablekeeper harness result. Local project tests pass and the official structural preflight passes. Stage 1 now implements the current official contract: an official harness run in host mode (shipped partial suite, a portion of the judge's set) reports Stage 1 120/120 PASS, while isolated mode is BLOCKED on this Windows host by a harness path-separator defect (`harness/cli.py:89`). Stages 2–4 still expose the project `/v1/...` API, which is not the current official Stage 2–4 specification. See [SUBMISSION_COMPLIANCE.md](SUBMISSION_COMPLIANCE.md).
+The repository is public and auditable. This branch does **not** claim a full official Dark Factory Tablekeeper harness result. Local project tests pass and the official structural preflight passes. Stages 1 and 2 now implement the current official contract: an official harness run in host mode (shipped partial suite, a portion of the judge's set) reports Stage 1 120/120 and Stage 2 25/25 PASS, while isolated mode is BLOCKED on this Windows host by a harness path-separator defect (`harness/cli.py:89`). Stages 3–4 still expose the project `/v1/...` API, which is not the current official Stage 3–4 specification. See [SUBMISSION_COMPLIANCE.md](SUBMISSION_COMPLIANCE.md).
 
 ## Repository map
 
@@ -13,7 +13,7 @@ The repository is public and auditable. This branch does **not** claim a full of
 | `mandates/` | Generic mandates for the actual Planner, Implementer, and Reviewer seats |
 | `room.json` | Unmodified full-room download from BAND |
 | `stage-1/` | Official-contract reservations service (auth, restaurants, availability, reservations, moves) with an in-memory store; `node --test` suite |
-| `stage-2/` | Hours, table selection, availability, and search/write parity |
+| `stage-2/` | Official-contract service extending Stage 1 with declared table combinations, `available_options`, and four server-rendered browser screens; in-memory store, `node --test` suite |
 | `stage-3/` | Auth, rate limiting, audit, migration, restart, logging, and timezone hardening |
 | `stage-4/` | Responsive browser UI, same-origin proxy, deployment supervisor, Dockerfile, RUN.md, and Playwright E2E |
 | `STAGE_SUMMARY.md` | What each stage actually contains |
@@ -25,7 +25,7 @@ The repository is public and auditable. This branch does **not** claim a full of
 ## Verified local results
 
 - Stage 1: 42/42 project tests passed (official-contract suite, 2026-10-14); official harness host mode, shipped partial suite: 120/120 PASS.
-- Stage 2: 28/28 project tests passed.
+- Stage 2: 60/60 project tests passed (official-contract suite, 2026-10-14); official harness host mode, shipped partial suite: 25/25 PASS.
 - Stage 3: 54/54 project tests passed.
 - Stage 4: 81/81 tests, syntax/type checks, and 5/5 Playwright scenarios passed.
 - Stage 4 Docker image built successfully; `/health` returned `{"status":"ok"}` and `/` returned HTTP 200.

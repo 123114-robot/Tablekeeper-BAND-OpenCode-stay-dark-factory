@@ -7,6 +7,13 @@
     "node": ">=22.6.0"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=1"
+    "start": "node src/server.ts",
+    "test": "node --test",
+    "test:api": "node --test test/api.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.0"
   }
 }

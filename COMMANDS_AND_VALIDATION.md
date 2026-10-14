@@ -174,3 +174,66 @@ Observed: `stage 1: error`, exit `4`; log `runs/stage1-iso-01/stage-1.log` ends
 with backslashes on Windows and passes it to the Linux runner container. This is
 a Windows-only harness path-separator defect; it would not occur on Linux/CI. No
 harness file was modified.
+
+## 2026-10-14 Stage 2 official-contract repair
+
+Branch `fix/official-tablekeeper-compliance`, base HEAD
+`320a7f1067901b96bc6da05630f3460de7839b70`. All changes confined to `stage-2/**`.
+Harness/spec root: `official-harness-review` at
+`803560d2a678ace1414465c098eb0ab5380ffade` (left untouched).
+
+G1 — project suite (workdir `stage-2`):
+
+```powershell
+node --test
+npm run typecheck
+```
+
+Observed: `node --test` -> 60 passed, 0 failed; `npm run typecheck` -> exit 0,
+clean (advisory, toolchain resolved from `stage-1/node_modules`).
+
+G2 — structural preflight (workdir `official-harness-review`):
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness check "C:\Users\deba3\band-work\submission-review" --track tablekeeper
+```
+
+Observed: exit `0`, `ok — gates 1, 2 and the mandate part of gate 4 pass`.
+
+G3 — official harness run, host mode (outbound NOT blocked), shipped partial
+suite — Stage 1 120/120 and Stage 2 25/25 (sample 8, UI 17). This is NOT an
+isolated PASS and NOT a full grading result.
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness run --track tablekeeper --repo "C:\Users\deba3\band-work\submission-review" --stage 2 --mode host --out "runs/stage2-host-01"
+```
+
+Observed: `stage 1: pass`; `stage 2: pass`; `stage 3: fail` (overshoot probe);
+`highest contiguous stage: 2`; `claimed stage: 2 on the shipped checks`; exit
+`0`; `share 1.0`; `suite_digest 678442e0…`. The `stage 3` line is the overshoot
+probe: a real Stage 3 contract gap (`POST /restaurants/.../policies -> 404`),
+so `overshoot` is `null`.
+
+G4 — Docker build and `/health` + `/` (workdir repo root):
+
+```powershell
+docker build -t tablekeeper-stage-2 "C:\Users\deba3\band-work\submission-review\stage-2"
+docker run -d --rm -e PORT=8080 -p 18081:8080 --name tk-g4-s2 tablekeeper-stage-2
+Invoke-WebRequest http://127.0.0.1:18081/health
+Invoke-WebRequest http://127.0.0.1:18081/
+docker rm -f tk-g4-s2
+```
+
+Observed: build exit 0; `GET /health` -> HTTP 200 `{"status":"ok"}`;
+`GET /` -> HTTP 200 `text/html` containing `data-testid="search-button"`.
+
+G5 isolated — BLOCKED / UNVERIFIED on this Windows host (harness left pristine):
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness run --track tablekeeper --repo "C:\Users\deba3\band-work\submission-review" --stage 2 --mode isolated --out "runs/stage2-isolated-01"
+```
+
+Observed: `stage 1: error`, `stage 2: error`, exit `4`; logs end
+`ERROR: file or directory not found: tablekeeper\test\stage_1`. Same Windows-only
+`harness/cli.py:89` path-separator defect as the Stage 1 run above; no harness
+file was modified.
