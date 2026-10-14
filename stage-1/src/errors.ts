@@ -1,118 +1,85 @@
 /**
- * The error taxonomy and its HTTP mapping.
+ * The official error taxonomy (spec §5).
  *
- * Every non-2xx response in this service is one of these codes. A code is not a
- * free-form string: it carries a fixed status here, so a caller can branch on
- * `error.code` and a reviewer can enumerate the whole surface from one map.
+ * Every non-2xx response is `{"error": {"code": "...", "message": "..."}}`. The code
+ * carries its HTTP status here and nowhere else, so the whole failure surface is
+ * enumerable from one map.
  */
 
-export const ERROR_STATUS = {
-  INVALID_TIME: 400,
-  AMBIGUOUS_LOCAL_TIME: 400,
-  INVALID_TIMEZONE: 400,
-  INVALID_PARTY_SIZE: 400,
-  INVALID_DURATION: 400,
-  INVALID_TABLE: 400,
-  SLOT_TAKEN: 409,
-  TABLE_TOO_SMALL: 409,
-  KEY_REUSED: 409,
-  NOT_FOUND: 404,
-  BUSY_RETRY_EXHAUSTED: 503,
-  /**
-   * The catch-all. Present in the taxonomy rather than cast in at the throw site, so the
-   * whole failure surface stays enumerable from one map and `ErrorCode` cannot disagree
-   * with what a caller is actually sent.
-   */
-  INTERNAL: 500,
-} as const;
+export type ErrorCode =
+  | 'malformed_request'
+  | 'missing_idempotency_key'
+  | 'unauthenticated'
+  | 'forbidden'
+  | 'not_found'
+  | 'table_unavailable'
+  | 'email_taken'
+  | 'idempotency_key_reuse'
+  | 'cutoff_passed'
+  | 'reservation_cancelled'
+  | 'validation_failed'
+  | 'not_on_slot_grid'
+  | 'outside_opening_hours'
+  | 'party_exceeds_capacity'
+  | 'invalid_local_time'
+  | 'internal';
 
-export type ErrorCode = keyof typeof ERROR_STATUS;
+export const STATUS: Record<ErrorCode, number> = {
+  malformed_request: 400,
+  missing_idempotency_key: 400,
+  unauthenticated: 401,
+  forbidden: 403,
+  not_found: 404,
+  table_unavailable: 409,
+  email_taken: 409,
+  idempotency_key_reuse: 409,
+  cutoff_passed: 409,
+  reservation_cancelled: 409,
+  validation_failed: 422,
+  not_on_slot_grid: 422,
+  outside_opening_hours: 422,
+  party_exceeds_capacity: 422,
+  invalid_local_time: 422,
+  internal: 500,
+};
 
-export type ErrorDetails = Record<string, unknown>;
+const DEFAULT_MESSAGE: Record<ErrorCode, string> = {
+  malformed_request: 'the request body could not be parsed or a field had the wrong type',
+  missing_idempotency_key: 'the Idempotency-Key header is required and must not be empty',
+  unauthenticated: 'a valid bearer token is required',
+  forbidden: 'not permitted to touch this resource',
+  not_found: 'no such resource',
+  table_unavailable: 'the table is not available for the requested interval',
+  email_taken: 'that email is already registered',
+  idempotency_key_reuse: 'the idempotency key was already used with a different request body',
+  cutoff_passed: 'the reservation is inside its cancellation cutoff',
+  reservation_cancelled: 'the reservation has been cancelled',
+  validation_failed: 'a required field is missing or a stated rule was violated',
+  not_on_slot_grid: 'the requested start is not on the restaurant booking grid',
+  outside_opening_hours: 'the requested start is outside the restaurant opening hours',
+  party_exceeds_capacity: 'the party size exceeds the table capacity',
+  invalid_local_time: 'the requested local time does not exist in the restaurant time zone',
+  internal: 'the request could not be completed',
+};
 
 export class ApiError extends Error {
   readonly code: ErrorCode;
-  readonly details: ErrorDetails;
+  readonly status: number;
 
-  constructor(code: ErrorCode, message: string, details: ErrorDetails = {}) {
-    super(message);
+  constructor(code: ErrorCode, message?: string) {
+    super(message ?? DEFAULT_MESSAGE[code]);
     this.name = 'ApiError';
     this.code = code;
-    this.details = details;
-  }
-
-  get status(): number {
-    return ERROR_STATUS[this.code];
-  }
-
-  toEnvelope(): { status: number; body: { error: { code: ErrorCode; message: string; details: ErrorDetails } } } {
-    return {
-      status: this.status,
-      body: { error: { code: this.code, message: this.message, details: this.details } },
-    };
+    this.status = STATUS[code];
   }
 }
 
-export function isApiError(value: unknown): value is ApiError {
-  return value instanceof ApiError;
-}
+export type ErrorBody = { error: { code: ErrorCode; message: string } };
 
-// SQLite primary result codes meaning "another writer holds the lock". node:sqlite
-// exposes these as the numeric `errcode`; its own `code` is always the generic
-// 'ERR_SQLITE_ERROR', so matching on `code` would classify every constraint failure
-// as contention.
-const SQLITE_BUSY = 5;
-const SQLITE_LOCKED = 6;
-const SQLITE_BUSY_RECOVERY = 261;
-const SQLITE_BUSY_SNAPSHOT = 517;
-const SQLITE_BUSY_TIMEOUT = 773;
-const BUSY_CODES: ReadonlySet<number> = new Set([
-  SQLITE_BUSY,
-  SQLITE_LOCKED,
-  SQLITE_BUSY_RECOVERY,
-  SQLITE_BUSY_SNAPSHOT,
-  SQLITE_BUSY_TIMEOUT,
-]);
-
-/** True for the SQLite errors that mean "a writer held the lock; try again". */
-export function isBusyError(err: unknown): boolean {
-  const errcode = (err as { errcode?: unknown } | null)?.errcode;
-  return typeof errcode === 'number' && BUSY_CODES.has(errcode);
-}
-
-/**
- * True for a primary-key violation on `occupancy` — a genuine double-book attempt.
- *
- * Deliberately narrow: a CHECK or FOREIGN KEY failure on the same table is a
- * different defect and must not be reported to a caller as "the slot is taken".
- */
-export function isOccupancyKeyViolation(err: unknown): boolean {
-  const message = (err as { message?: unknown } | null)?.message;
-  return (
-    typeof message === 'string' &&
-    message.startsWith('UNIQUE constraint failed: occupancy.dining_table_id, occupancy.quantum_start_utc')
-  );
-}
-
-/**
- * Turn anything thrown into the single response shape. An unrecognised throw is
- * reported as `NOT_FOUND` only when it really is a lookup miss; anything else is a
- * 500 with a generic message, because leaking an internal message to a caller is
- * worse than being vague.
- */
-export function toErrorResponse(err: unknown): {
-  status: number;
-  body: { error: { code: ErrorCode; message: string; details: ErrorDetails } };
-} {
-  // Every branch returns an ApiError envelope, so the code here is a real member of
-  // ErrorCode and the taxonomy test in test/http.test.ts can require it to be reachable.
-  if (isApiError(err)) return err.toEnvelope();
-  if (isBusyError(err)) {
-    return new ApiError(
-      'BUSY_RETRY_EXHAUSTED',
-      'the booking store is busy; the request may be retried',
-      { retryable: true },
-    ).toEnvelope();
+export function toErrorResponse(err: unknown): { status: number; body: ErrorBody } {
+  if (err instanceof ApiError) {
+    return { status: err.status, body: { error: { code: err.code, message: err.message } } };
   }
-  return new ApiError('INTERNAL', 'the request could not be completed').toEnvelope();
+  const fallback = new ApiError('internal');
+  return { status: fallback.status, body: { error: { code: fallback.code, message: fallback.message } } };
 }

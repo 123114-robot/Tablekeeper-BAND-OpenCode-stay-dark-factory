@@ -1,92 +1,79 @@
 /**
- * Request parsing, routing, and response shaping.
+ * HTTP routing, parsing and response shaping for the official Stage 1 contract.
  *
- * Every non-2xx response leaves here in one envelope:
- *   {"error": {"code": "<CODE>", "message": "<human readable>", "details": {...}}}
- * Nothing else in the service writes a response body, so a caller never has to guess
- * the shape of a failure.
+ * Failures always leave here as `{"error": {"code", "message"}}`. Success bodies are
+ * JSON; `/health`, `/_test/reset` and `/_test/import` are the shapes the spec names.
  */
 
-import { randomUUID } from 'node:crypto';
 import { ApiError, toErrorResponse } from './errors.ts';
-import type { Db, TxOptions } from './db.ts';
-import { assertResolvableZone } from './timezone.ts';
-import { cancelBooking, getBooking, reserve } from './bookings.ts';
+import { isValidEmail, hashPassword, newToken, newUserId, verifyPassword } from './auth.ts';
+import {
+  canonicalJson,
+  exportState,
+  idempotencyKey as idempotencyRecordKey,
+  stateFromExported,
+  stateFromFixture,
+  type Store,
+} from './store.ts';
+import { isRealDateString } from './timezone.ts';
+import {
+  applyMoves,
+  availability,
+  cancelReservation,
+  createReservation,
+  getReservation,
+  getRestaurant,
+  listReservations,
+  listRestaurants,
+  patchReservation,
+} from './domain.ts';
 
-const MAX_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = 1024 * 1024;
+const DRAIN_LIMIT_BYTES = MAX_BODY_BYTES * 8;
 
-type JsonBody = Record<string, unknown>;
-
-/**
- * A body the caller got wrong in a way the taxonomy does not name a code for: unparseable
- * JSON, a missing required field, a field of the wrong JSON type. Reported as
- * INVALID_TABLE — the 400 that is not bound to a specific resource concept — with
- * `details.field` naming the actual offender, so the code never has to carry the reason.
- */
-function badBody(field: string, message: string, value: unknown): ApiError {
-  return new ApiError('INVALID_TABLE', message, { field, received: describe(value) });
-}
-
-function describe(value: unknown): string {
-  if (value === undefined) return 'absent';
-  if (value === null) return 'null';
-  if (Array.isArray(value)) return 'array';
-  if (typeof value === 'object') return 'object';
-  if (typeof value === 'string') return value.length > 120 ? `${value.slice(0, 120)}…` : value;
-  return String(value);
-}
-
-const DRAIN_LIMIT_BYTES = MAX_BODY_BYTES * 16;
+type Body = Record<string, unknown>;
 
 function readBody(req: import('node:http').IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    let oversize: { size: number } | undefined;
+    let tooLarge = false;
     let settled = false;
     const settle = (run: () => void): void => {
-      if (settled) return;
-      settled = true;
-      run();
+      if (!settled) {
+        settled = true;
+        run();
+      }
     };
-
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (oversize !== undefined) {
-        // Already refusing this body. Keep reading only so the request can finish and
-        // the response can be delivered; nothing more is kept in memory.
+      if (tooLarge) {
         if (size > DRAIN_LIMIT_BYTES) {
-          // The caller is not going to stop. There is no response worth delivering to a
-          // peer sending this much, so give up on the socket rather than read forever.
-          settle(() => reject(badBody('body', `request body exceeds ${MAX_BODY_BYTES} bytes`, size)));
+          settle(() => reject(new ApiError('malformed_request', 'request body is too large')));
           req.destroy();
         }
         return;
       }
       if (size > MAX_BODY_BYTES) {
-        // Stop accumulating, but do not destroy the socket: destroying here kills the
-        // connection before the 400 envelope written by the route handler can reach the
-        // client, which then reports a transport TypeError instead of a refusal it can
-        // read. Draining to 'end' is what lets the answer arrive.
-        oversize = { size };
+        tooLarge = true;
         chunks.length = 0;
         return;
       }
       chunks.push(chunk);
     });
     req.on('end', () => {
-      if (oversize !== undefined) {
-        settle(() => reject(badBody('body', `request body exceeds ${MAX_BODY_BYTES} bytes`, oversize!.size)));
+      if (tooLarge) {
+        settle(() => reject(new ApiError('malformed_request', 'request body is too large')));
         return;
       }
       settle(() => resolve(Buffer.concat(chunks)));
     });
     req.on('error', (err) => settle(() => reject(err)));
-    req.on('aborted', () => settle(() => reject(badBody('body', 'request aborted before the body was complete', undefined))));
+    req.on('aborted', () => settle(() => reject(new ApiError('malformed_request', 'request aborted'))));
   });
 }
 
-async function parseJsonBody(req: import('node:http').IncomingMessage): Promise<JsonBody> {
+async function parseJsonObject(req: import('node:http').IncomingMessage): Promise<Body> {
   const raw = await readBody(req);
   const text = raw.toString('utf8').trim();
   if (text === '') return {};
@@ -94,12 +81,12 @@ async function parseJsonBody(req: import('node:http').IncomingMessage): Promise<
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw badBody('body', 'request body must be a JSON object', text.slice(0, 120));
+    throw new ApiError('malformed_request');
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw badBody('body', 'request body must be a JSON object', text.slice(0, 120));
+    throw new ApiError('malformed_request');
   }
-  return parsed as JsonBody;
+  return parsed as Body;
 }
 
 function sendJson(res: import('node:http').ServerResponse, status: number, body: unknown): void {
@@ -116,127 +103,246 @@ function sendNoContent(res: import('node:http').ServerResponse): void {
   res.end();
 }
 
-function createRestaurant(db: Db, body: JsonBody): { status: number; body: unknown } {
-  const name = body.name;
-  if (typeof name !== 'string' || name.trim() === '') {
-    throw badBody('name', 'name must be a non-empty string', name);
-  }
-  const timezone = assertResolvableZone(body.timezone);
-  const id = randomUUID();
-  db.prepare('INSERT INTO restaurant (id, name, timezone) VALUES (?, ?, ?)').run(id, name, timezone);
-  return { status: 201, body: { id } };
+function headerValue(req: import('node:http').IncomingMessage, name: string): string | undefined {
+  const value = req.headers[name.toLowerCase()];
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
-function createTable(db: Db, restaurantId: string, body: JsonBody): { status: number; body: unknown } {
-  const restaurant = db.prepare('SELECT id FROM restaurant WHERE id = ?').get(restaurantId);
-  if (restaurant === undefined) {
-    throw new ApiError('NOT_FOUND', 'no such restaurant', { restaurant_id: restaurantId });
-  }
-  const seats = body.seats;
-  if (typeof seats !== 'number' || !Number.isInteger(seats) || seats <= 0) {
-    throw badBody('seats', 'seats must be a positive integer', seats);
-  }
-  const id = randomUUID();
-  db.prepare('INSERT INTO dining_table (id, restaurant_id, seats) VALUES (?, ?, ?)').run(
-    id,
-    restaurantId,
-    seats,
-  );
-  return { status: 201, body: { id } };
+function requireUser(store: Store, req: import('node:http').IncomingMessage): string {
+  const header = headerValue(req, 'authorization');
+  const match = typeof header === 'string' ? /^Bearer\s+(\S+)$/i.exec(header) : null;
+  if (match === null) throw new ApiError('unauthenticated');
+  const userId = store.current.tokens.get(match[1] as string);
+  if (userId === undefined) throw new ApiError('unauthenticated');
+  return userId;
 }
 
-function createBooking(db: Db, body: JsonBody, txOptions: TxOptions): { status: number; body: unknown } {
-  const result = reserve(
-    db,
-    {
-      restaurantId: body.restaurant_id as string,
-      tableIds: body.table_ids as string[],
-      partySize: body.party_size as number,
-      localStart: body.local_start as string,
-      durationMin: body.duration_min as number,
-      idempotencyKey: body.idempotency_key as string | undefined,
-      fold: body.fold,
-    },
-    txOptions,
-  );
-  return { status: result.replayed ? 200 : 201, body: result.booking };
+function runIdempotent(
+  store: Store,
+  userId: string,
+  path: string,
+  key: string | undefined,
+  body: Body,
+  run: () => { status: number; body: unknown },
+): { status: number; body: unknown } {
+  if (key === undefined || key === '') throw new ApiError('missing_idempotency_key');
+  if (key.length > 255) throw new ApiError('validation_failed');
+  const recordKey = idempotencyRecordKey(userId, path, key);
+  const canonical = canonicalJson(body);
+  const existing = store.current.idempotency.get(recordKey);
+  if (existing !== undefined) {
+    if (existing.body_canonical === canonical) return { status: 200, body: existing.response };
+    throw new ApiError('idempotency_key_reuse');
+  }
+  const result = run();
+  store.current.idempotency.set(recordKey, {
+    body_canonical: canonical,
+    status: result.status,
+    response: result.body,
+  });
+  return result;
+}
+
+function signup(store: Store, body: Body): { status: number; body: unknown } {
+  const email = body.email;
+  const password = body.password;
+  const displayName = body.display_name;
+  if (email === undefined || password === undefined || displayName === undefined) {
+    throw new ApiError('validation_failed');
+  }
+  if (typeof email !== 'string' || typeof password !== 'string' || typeof displayName !== 'string') {
+    throw new ApiError('malformed_request');
+  }
+  if (!isValidEmail(email)) throw new ApiError('validation_failed');
+  if (password.length < 8) throw new ApiError('validation_failed');
+  if (store.current.emails.has(email.toLowerCase())) throw new ApiError('email_taken');
+
+  const userId = newUserId();
+  store.current.users.set(userId, {
+    id: userId,
+    email,
+    password_hash: hashPassword(password),
+    display_name: displayName,
+  });
+  store.current.emails.set(email.toLowerCase(), userId);
+  const token = newToken();
+  store.current.tokens.set(token, userId);
+  return { status: 201, body: { user_id: userId, display_name: displayName, token } };
+}
+
+function login(store: Store, body: Body): { status: number; body: unknown } {
+  const email = body.email;
+  const password = body.password;
+  if (typeof email !== 'string' || typeof password !== 'string') {
+    throw new ApiError('malformed_request');
+  }
+  const userId = store.current.emails.get(email.toLowerCase());
+  const user = userId === undefined ? undefined : store.current.users.get(userId);
+  if (user === undefined || !verifyPassword(password, user.password_hash)) {
+    throw new ApiError('unauthenticated');
+  }
+  const token = newToken();
+  store.current.tokens.set(token, user.id);
+  return { status: 200, body: { user_id: user.id, display_name: user.display_name, token } };
+}
+
+function availabilityQuery(url: URL): { restaurantId: string; date: string; partySize: number } {
+  const restaurantId = url.searchParams.get('restaurant_id');
+  const date = url.searchParams.get('date');
+  const partyRaw = url.searchParams.get('party_size');
+  if (restaurantId === null || date === null || partyRaw === null) {
+    throw new ApiError('validation_failed');
+  }
+  if (!/^\d+$/.test(partyRaw)) throw new ApiError('validation_failed');
+  const partySize = Number(partyRaw);
+  if (!Number.isInteger(partySize) || partySize < 1) throw new ApiError('validation_failed');
+  if (!isRealDateString(date)) throw new ApiError('validation_failed');
+  return { restaurantId, date, partySize };
 }
 
 async function dispatch(
-  db: Db,
-  txOptions: TxOptions,
-  method: string,
-  pathname: string,
+  store: Store,
   req: import('node:http').IncomingMessage,
-): Promise<{ status: number; body?: unknown; noContent?: boolean }> {
-  // /health answers before anything else and touches no state, so a probe never waits
-  // on the write lock and never fails because a booking is in flight.
-  if (method === 'GET' && pathname === '/health') {
-    return { status: 200, body: { status: 'ok' } };
+  res: import('node:http').ServerResponse,
+): Promise<void> {
+  const method = req.method ?? 'GET';
+  let url: URL;
+  try {
+    url = new URL(req.url ?? '/', 'http://tablekeeper.invalid');
+  } catch {
+    throw new ApiError('not_found');
+  }
+  const segments = url.pathname.split('/').filter((segment) => segment !== '');
+
+  if (method === 'GET' && segments.length === 1 && segments[0] === 'health') {
+    sendJson(res, 200, { status: 'ok' });
+    return;
   }
 
-  const segments = pathname.split('/').filter((segment) => segment !== '');
-
-  if (segments.length === 2 && segments[0] === 'v1' && segments[1] === 'restaurants') {
-    if (method !== 'POST') throw new ApiError('NOT_FOUND', 'no such route', { method, path: pathname });
-    return createRestaurant(db, await parseJsonBody(req));
-  }
-
-  if (
-    segments.length === 4 &&
-    segments[0] === 'v1' &&
-    segments[1] === 'restaurants' &&
-    segments[3] === 'tables'
-  ) {
-    if (method !== 'POST') throw new ApiError('NOT_FOUND', 'no such route', { method, path: pathname });
-    return createTable(db, segments[2] as string, await parseJsonBody(req));
-  }
-
-  if (segments.length === 2 && segments[0] === 'v1' && segments[1] === 'bookings') {
-    if (method !== 'POST') throw new ApiError('NOT_FOUND', 'no such route', { method, path: pathname });
-    return createBooking(db, await parseJsonBody(req), txOptions);
-  }
-
-  if (segments.length === 3 && segments[0] === 'v1' && segments[1] === 'bookings') {
-    const bookingId = segments[2] as string;
-    if (method === 'GET') return { status: 200, body: getBooking(db, bookingId) };
-    if (method === 'DELETE') {
-      cancelBooking(db, bookingId, txOptions);
-      return { status: 204, noContent: true };
+  if (method === 'POST' && segments.length === 2 && segments[0] === '_test') {
+    if (segments[1] === 'reset') {
+      const next = stateFromFixture(await parseJsonObject(req));
+      store.current = next;
+      sendNoContent(res);
+      return;
     }
-    throw new ApiError('NOT_FOUND', 'no such route', { method, path: pathname });
+    if (segments[1] === 'import') {
+      const body = await parseJsonObject(req);
+      if (body.track !== 'tablekeeper' || body.format_version !== 1 || body.state === undefined) {
+        throw new ApiError('validation_failed');
+      }
+      const next = stateFromExported(body.state);
+      store.current = next;
+      sendNoContent(res);
+      return;
+    }
   }
 
-  throw new ApiError('NOT_FOUND', 'no such route', { method, path: pathname });
-}
+  if (method === 'GET' && segments.length === 2 && segments[0] === '_test' && segments[1] === 'export') {
+    sendJson(res, 200, { track: 'tablekeeper', format_version: 1, state: exportState(store.current) });
+    return;
+  }
 
-export function createRequestListener(db: Db, txOptions: TxOptions = {}) {
-  return function listener(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): void {
-    const method = req.method ?? 'GET';
-    let pathname: string;
-    try {
-      pathname = new URL(req.url ?? '/', 'http://tablekeeper.invalid').pathname;
-    } catch {
-      const failure = new ApiError('NOT_FOUND', 'no such route', { method, path: String(req.url) });
-      sendJson(res, failure.status, failure.toEnvelope().body);
+  if (method === 'POST' && segments.length === 2 && segments[0] === 'auth') {
+    const body = await parseJsonObject(req);
+    if (segments[1] === 'signup') {
+      const result = signup(store, body);
+      sendJson(res, result.status, result.body);
+      return;
+    }
+    if (segments[1] === 'login') {
+      const result = login(store, body);
+      sendJson(res, result.status, result.body);
+      return;
+    }
+  }
+
+  if (method === 'GET' && segments.length === 1 && segments[0] === 'restaurants') {
+    sendJson(res, 200, listRestaurants(store.current));
+    return;
+  }
+
+  if (method === 'GET' && segments.length === 2 && segments[0] === 'restaurants') {
+    sendJson(res, 200, getRestaurant(store.current, segments[1] as string));
+    return;
+  }
+
+  if (method === 'GET' && segments.length === 1 && segments[0] === 'availability') {
+    const { restaurantId, date, partySize } = availabilityQuery(url);
+    sendJson(res, 200, availability(store.current, restaurantId, date, partySize));
+    return;
+  }
+
+  if (segments.length >= 1 && segments[0] === 'reservations') {
+    const userId = requireUser(store, req);
+
+    if (method === 'POST' && segments.length === 1) {
+      const body = await parseJsonObject(req);
+      const result = runIdempotent(
+        store,
+        userId,
+        '/reservations',
+        headerValue(req, 'idempotency-key'),
+        body,
+        () => createReservation(store.current, userId, body),
+      );
+      sendJson(res, result.status, result.body);
       return;
     }
 
-    void dispatch(db, txOptions, method, pathname, req)
-      .then((result) => {
-        if (result.noContent === true) {
-          sendNoContent(res);
-          return;
-        }
-        sendJson(res, result.status, result.body);
-      })
-      .catch((err: unknown) => {
-        if (res.headersSent) {
-          res.destroy();
-          return;
-        }
-        const failure = toErrorResponse(err);
-        sendJson(res, failure.status, failure.body);
-      });
+    if (method === 'GET' && segments.length === 1) {
+      sendJson(res, 200, listReservations(store.current, userId));
+      return;
+    }
+
+    if (segments.length === 2 && method === 'GET') {
+      sendJson(res, 200, getReservation(store.current, userId, segments[1] as string));
+      return;
+    }
+
+    if (segments.length === 2 && method === 'PATCH') {
+      const body = await parseJsonObject(req);
+      sendJson(res, 200, patchReservation(store.current, userId, segments[1] as string, body));
+      return;
+    }
+
+    if (segments.length === 3 && segments[2] === 'cancel' && method === 'POST') {
+      sendJson(res, 200, cancelReservation(store.current, userId, segments[1] as string));
+      return;
+    }
+  }
+
+  if (method === 'POST' && segments.length === 1 && segments[0] === 'reservation-moves') {
+    const userId = requireUser(store, req);
+    const body = await parseJsonObject(req);
+    const result = runIdempotent(
+      store,
+      userId,
+      '/reservation-moves',
+      headerValue(req, 'idempotency-key'),
+      body,
+      () => applyMoves(store.current, userId, body),
+    );
+    sendJson(res, result.status, result.body);
+    return;
+  }
+
+  throw new ApiError('not_found');
+}
+
+export function createRequestListener(store: Store) {
+  return function listener(
+    req: import('node:http').IncomingMessage,
+    res: import('node:http').ServerResponse,
+  ): void {
+    void dispatch(store, req, res).catch((err: unknown) => {
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      const failure = toErrorResponse(err);
+      sendJson(res, failure.status, failure.body);
+    });
   };
 }
