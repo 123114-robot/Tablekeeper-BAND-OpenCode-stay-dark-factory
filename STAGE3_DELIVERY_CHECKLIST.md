@@ -51,11 +51,10 @@ Branch: `fix/stage3-band-official-compliance`. Base HEAD:
 
 ## 6. Commit and push (only after §5 PASS)
 
-- [ ] Focused commit on `fix/stage3-band-official-compliance`.
-- [ ] Push public branch.
-- [ ] Verify remote SHA equals local HEAD; record SHA in the room and in
-      `STAGE3_BAND_EXECUTION_REPORT.md`.
-- [ ] No merge to `main`; Codex opens the pull request.
+- [x] Focused commit on `fix/stage3-band-official-compliance` — `de5a67ca987009638cc3977628cf4bf84d6f95d6`.
+- [x] Push public branch (explicit refspec; tracking retargeted off `origin/main`).
+- [x] Remote SHA verified == local HEAD (`de5a67ca987009638cc3977628cf4bf84d6f95d6`); recorded in the room and in `STAGE3_BAND_EXECUTION_REPORT.md`.
+- [x] No merge to `main`; Codex opens the pull request.
 
 ## 7. Owner actions still outstanding
 
