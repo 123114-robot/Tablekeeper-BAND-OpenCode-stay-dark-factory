@@ -17,15 +17,12 @@
 - In-memory state, zero runtime dependencies; accepts a Stage 1 export on import.
 - Project result: 60/60 node tests passed. Official harness host mode, shipped partial suite: Stage 1 120/120 + Stage 2 25/25 PASS; isolated BLOCKED (Windows harness path-separator defect).
 
-## Stage 3 — operational hardening
+## Stage 3 — official policies, history, series and moves
 
-- API-key validation helpers.
-- Token-bucket rate limiting.
-- Structured logging with PII redaction.
-- Audit trail storage.
-- Migration ordering and shared-ledger checks.
-- Restart-safety and timezone-suite checks.
-- Project result: 54/54 tests passed.
+- Self-contained official-contract service extending Stage 2 in place: per-slot availability explanations (`explain=true`), owner-only reservation history, policy publication with `manager_user_ids` and per-restaurant versioning, policy selection with accepted terms and revisions, decisions, recurring weekly series with exceptions, combined-table history, and moves that adopt the resulting date's policy.
+- Accepts same-team Stage 1 and Stage 2 exports; revision-1 reservations default to policy 0, and stage-3 exports additively round-trip the new state.
+- In-memory state, zero runtime dependencies. The pre-official placeholder hardening modules (`audit`, `logs`, `migrations`, `rate-limit`, `restart`, `timezone-suite`, and the broken `server.ts`) were removed (disclosed).
+- Project result: 92/92 node tests passed with a clean `tsc --noEmit`. Official harness host mode, shipped partial suite: Stage 1 120/120 + Stage 2 25/25 + Stage 3 7/7 PASS; isolated BLOCKED (Windows harness path-separator defect plus empty Stage 4 combined-build context).
 
 ## Stage 4 — product surface and delivery
 
@@ -38,4 +35,4 @@
 
 ## Boundary
 
-These stage names describe the team implementation. They do not map one-to-one to the current official Tablekeeper Stage 1–4 contracts; see `SUBMISSION_COMPLIANCE.md`.
+These stage names describe the team implementation. Stages 1–3 now implement the current official Tablekeeper Stage 1–3 contracts; Stage 4 remains an earlier distinct implementation that does not match the current official Stage 4 specification. See `SUBMISSION_COMPLIANCE.md`.
