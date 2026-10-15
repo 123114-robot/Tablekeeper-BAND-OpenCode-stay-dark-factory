@@ -68,7 +68,11 @@ is the formal evidence gap; the mandates are left frozen as delivered.
    isolated BLOCKED transcript.
 7. **Doc round (Planner).** Updated the four stale compliance docs and created
    this report and the delivery checklist.
-8. **Review (Reviewer).** Pending — the pre-commit gate runs after this round.
+8. **Review (Reviewer).** Doc-consistency check PASS, then **UNCONDITIONAL
+   PASS** (2026-10-16). The Reviewer independently reran the suite on the pushed
+   tree (stage-3 92/92 + `tsc`, stage-1 42/42, stage-2 60/60, Docker build +
+   health + smoke PASS, `harness check` ok) and reproduced the G6 host-mode run
+   (`claimed stage 3`).
 
 ## Binding interpretation decisions (D1–D9)
 
@@ -113,15 +117,16 @@ is the formal evidence gap; the mandates are left frozen as delivered.
 | `harness check` (UTF-8 mode) | exit 0 |
 | Host-mode harness (directional) | 120/120, 25/25, 7/7; Stage 4 overshoot fail; claimed stage 3 |
 | Isolated `--all` harness | BLOCKED / UNVERIFIED |
-| Reviewer verdict | pending |
+| Reviewer verdict | UNCONDITIONAL PASS (ratified on the pushed tip) |
 
 ## Evidence gaps (not fabricated)
 
 - Isolated official harness BLOCKED on this Windows host; two preserved causes.
 - Host-mode results are directional, not a grading pass.
 - Mandate/model mismatch as above.
-- No commit or push exists yet; it happens only after Reviewer PASS and this
-  report is then updated with the pushed commit SHA at that gate.
+- (Resolved) The commit/push has since happened: `de5a67c…` on
+  `fix/stage3-band-official-compliance`, remote verified; the pushed SHA is
+  recorded in the Git-gate section below and in the room.
 
 ## Room-review follow-ups (2026-10-16)
 
@@ -159,7 +164,7 @@ public branch:
 - Push was an explicit refspec (`git push -u origin fix/stage3-band-official-compliance`),
   creating the remote branch and retargeting tracking away from `origin/main`, so
   a bare `git push` cannot reach `main`. **No merge to `main`.**
-- PR opened by Codex at
+- PR to be opened by Codex (no PR exists yet); compare/new URL
   `https://github.com/123114-robot/stay-dark-factory-submission/pull/new/fix/stage3-band-official-compliance`.
 
 This follow-up commit exists only to write the SHA above into this report and to
