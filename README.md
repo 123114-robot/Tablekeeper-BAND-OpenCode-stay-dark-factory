@@ -21,18 +21,19 @@ The repository is public and auditable. This branch does **not** claim a full of
 | `COMMANDS_AND_VALIDATION.md` | Commands executed and their observed results |
 | `SUBMISSION_COMPLIANCE.md` | Official-rule mapping, passes, gaps, and required follow-up |
 | `EVIDENCE_CHECKLIST.md` | Claim-by-claim evidence state |
+| `FINAL_PROJECT_STATUS_REPORT.md` | Consolidated current results, historical evidence, blockers, and remaining submission work |
 
 ## Verified local results
 
-- Stage 1: 42/42 project tests passed (official-contract suite, 2026-10-14); official harness host mode, shipped partial suite: 120/120 PASS.
-- Stage 2: 60/60 project tests passed (official-contract suite, 2026-10-14); official harness host mode, shipped partial suite: 25/25 PASS.
-- Stage 3: 92/92 project tests passed (official-contract suite, 2026-10-16) with a clean `tsc --noEmit`; official harness host mode, shipped partial suite: 7/7 PASS.
-- Stage 4: 81/81 tests, syntax/type checks, and 5/5 Playwright scenarios passed.
-- Stage 4 Docker image built successfully; `/health` returned `{"status":"ok"}` and `/` returned HTTP 200.
+- Stage 1: 42/42 project tests passed again on 2026-10-17; official harness host mode, shipped partial suite: 120/120 PASS.
+- Stage 2: 60/60 project tests passed again on 2026-10-17; official harness host mode, shipped partial suite: 25/25 PASS.
+- Stage 3: 92/92 project tests passed again on 2026-10-17; the recorded Stage 3 typecheck is clean; official harness host mode, shipped partial suite: 7/7 PASS.
+- Stage 4 historical source evidence: 81/81 tests, syntax/type checks, 5/5 Playwright, Docker build, `/health` and `/` passed at source commit `c7a3cc3069583f7af46b6ebafa91ba3cdcb82937`.
+- Stage 4 current-tree recheck on 2026-10-17: after `npm ci`, 54 passed, 2 failed and 25 were cancelled because the frozen earlier Stage 4 still imports removed legacy `stage-1/src/db.ts`; composed-service tests time out. This is a disclosed cross-stage compatibility blocker, not a current PASS.
 - Frozen Stage 1–3 scope check, tracked-secret scan, and `git diff --check` passed in the source worktree.
 - BAND Reviewer returned PASS for the Stage 4 task at source commit `c7a3cc3069583f7af46b6ebafa91ba3cdcb82937`.
 
-These results establish the behavior of this implementation against its own project contract. They do not substitute for the official event harness.
+These results establish the behavior of Stages 1–3 against their project contract and preserve historical Stage 4 evidence. They do not substitute for the official event harness. See [FINAL_PROJECT_STATUS_REPORT.md](FINAL_PROJECT_STATUS_REPORT.md) for the consolidated current state.
 
 ## Run Stage 4 locally
 
