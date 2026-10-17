@@ -237,3 +237,96 @@ Observed: `stage 1: error`, `stage 2: error`, exit `4`; logs end
 `ERROR: file or directory not found: tablekeeper\test\stage_1`. Same Windows-only
 `harness/cli.py:89` path-separator defect as the Stage 1 run above; no harness
 file was modified.
+
+## 2026-10-16 Stage 3 official-contract repair
+
+Executed on Windows 11 / PowerShell. Branch `fix/stage3-band-official-compliance`,
+base HEAD `a257d9a4f988b3c7bca7b4d1fb055e9781171191`. All source changes are
+confined to `stage-3/**` plus top-level compliance docs; `stage-1/**`,
+`stage-2/**`, `stage-4/**`, `mandates/**` and `room.json` are byte-identical.
+Harness/spec root: `official-harness-review` at
+`803560d2a678ace1414465c098eb0ab5380ffade` (left untouched). Runtime: OpenCode +
+Band local adapters, model `opencode/big-pickle` for all three seats.
+
+### G1 — scope guard (workdir repo root)
+
+```powershell
+git status --porcelain
+git diff --stat -- stage-1 stage-2 stage-4 mandates room.json
+```
+
+Observed: only `stage-3/**` files appear as modified/deleted/untracked; the frozen
+paths produce no diff. Text-file line endings changed from CRLF to the repo's
+tracked form are Git metadata only.
+
+### G2 — Stage 3 project suite and typecheck (workdir `stage-3`)
+
+```powershell
+npm test
+npx tsc --noEmit
+```
+
+Observed: `npm test` -> 92 passed, 0 failed (previously 90 before the D1/D7
+reconciliation added two pins); `tsc --noEmit` -> exit 0, clean.
+
+### G3 — frozen prior-stage regressions (workdir `stage-1`, `stage-2`)
+
+```powershell
+cd stage-1; npm test
+cd stage-2; npm test
+```
+
+Observed: Stage 1 -> 42 passed, 0 failed; Stage 2 -> 60 passed, 0 failed.
+
+### G4 — Stage 3 Docker build, `/health` and product smoke (workdir repo root)
+
+```powershell
+docker build -t tablekeeper-stage-3 "C:\Users\deba3\band-work\submission-review\stage-3"
+docker run -d --rm -e PORT=8080 -p 18082:8080 --name tk-g4-s3 tablekeeper-stage-3
+Invoke-WebRequest http://127.0.0.1:18082/health
+docker rm -f tk-g4-s3
+```
+
+Observed: build exit 0; `GET /health` -> HTTP 200 `{"status":"ok"}` on the first
+try. A full in-container smoke (test-state reset, `explain=true`, policy publish,
+reservation create, history, decision, recurring series) PASSed. Verbatim
+transcript in `STAGE3_OFFICIAL_VALIDATION.md`.
+
+### G5 — structural preflight (workdir `official-harness-review`)
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness check "C:\Users\deba3\band-work\submission-review" --track tablekeeper
+```
+
+Observed: exit `0`, `ok — gates 1, 2 and the mandate part of gate 4 pass`.
+`PYTHONUTF8=1` is mandatory on this host: without it the default `cp950` code
+page cannot decode `room.json`.
+
+### G6 — official harness run, host mode (shipped partial suite, directional)
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness run --track tablekeeper --repo "C:\Users\deba3\band-work\submission-review" --stage 3 --mode host --out "runs/stage3-host-01"
+```
+
+Observed: `stage 1: pass (120/120)`; `stage 2: pass (25/25)`; `stage 3: pass
+(7/7)`; `stage 4: fail` (overshoot probe); `claimed stage: 3 on the shipped
+checks`; exit `0`. `report.json`: `mode host`, `revision a257d9a`, `run_id
+00ff23694a0e45f68e6083abd255fd45`, `suite_digest b302bbb7…`, provenance
+working-tree. This is NOT an isolated PASS and NOT a full grading result — the
+shipped suite is a portion of the judge's full set.
+
+### G7 — official harness run, isolated `--all` (BLOCKED / UNVERIFIED)
+
+```powershell
+$env:PYTHONUTF8='1'; python -m harness run --track tablekeeper --repo "C:\Users\deba3\band-work\submission-review" --all --mode isolated --out "runs/stage3-all-isolated-01"
+```
+
+Observed: BLOCKED, two environmental causes. (1) The frozen `stage-4/Dockerfile`
+combined-context build receives an effectively empty build context (2 bytes), so
+the combined image cannot build. (2) Every isolated pytest target is passed to
+the Linux runner with Windows backslashes (`ERROR: file or directory not found:
+tablekeeper\test\stage_N`), the same `harness/cli.py:89` defect noted for Stages
+1 and 2. An earlier `--stage 3 --mode isolated` attempt hit the same
+path-separator defect. No harness file was modified. Exact output preserved in
+`STAGE3_OFFICIAL_VALIDATION.md` Block 6; this is reported as BLOCKED, never as a
+pass.
